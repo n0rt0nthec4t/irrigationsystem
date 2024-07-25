@@ -43,7 +43,7 @@
 // -- hey siri to turn off/on system doesn't work in iOS 15??
 // -- iOS/iPadOS/macOS recent controls don't show in Home app <- seem fixed in latest versions ie: 16.x
 //
-// Version 22/4/2024
+// Version 24/7/2024
 // Mark Hulskamp
 
 "use strict";
@@ -96,7 +96,10 @@ class IrrigationSystem extends HomeKitDevice {
     addHomeKitServices(serviceName) {
         // Add this Irrigation system to the "master" accessory and set properties
         this.irrigationService = this.HomeKitAccessory.addService(HAP.Service.IrrigationSystem, "Irrigation System", 1);
-        this.HomeKitAccessory.setPrimaryService(this.irrigationService);
+        this.irrigationService.setPrimaryService();
+
+        // Create extra details for output
+        var postSetupDetails = [];
 
         // Create flow/leak sensor if configured
         if (this.deviceData.system.FlowSensorPin != 0) {
@@ -136,7 +139,7 @@ class IrrigationSystem extends HomeKitDevice {
             this.leakSensorService = this.HomeKitAccessory.addService(HAP.Service.LeakSensor, "Water Leak", 1);
             this.leakSensorService.updateCharacteristic(HAP.Characteristic.LeakDetected, HAP.Characteristic.LeakDetected.LEAK_NOT_DETECTED);    // No leak by default
             
-            outputLogging(ACCESSORYNAME, false, "Added water leak sensor on GPIO pin '%s'", this.deviceData.system.FlowSensorPin, (this.deviceData.system.WaterLeakAlert == true ? "with HomeKit alerting" : ""));
+            postSetupDetails.push("Leak sensor on GPIO pin '" + this.deviceData.system.FlowSensorPin + (this.deviceData.system.WaterLeakAlert == true ? "with HomeKit alerting" : "") + "'");
         }
 
         // Add in any defined water tanks
@@ -148,18 +151,19 @@ class IrrigationSystem extends HomeKitDevice {
                         this.irrigationService.addCharacteristic(HAP.Characteristic.WaterLevel);
                     }
                     this.tanks.push(new WaterTank(tank.TankHeight, tank.MinimumLevel, tank.SensorTrig, tank.SensorEcho, this.eventEmitter));
-                    outputLogging(ACCESSORYNAME, false, "Added watertank with sensor on GPIO pins '%s,%s'", tank.SensorTrig, tank.SensorEcho);
+
+                    postSetupDetails.push("Watertank on GPIO pins '" + tank.SensorTrig + "," + tank.SensorEcho + "'");
                 }
             });
         }
 
         // Setup any defined "physical" and/or "virtual" irrigation zones
-        this.#buildIrrigationZones();
+        postSetupDetails = postSetupDetails.concat(this.#buildIrrigationZones());
 
         // Setup linkage to EveHome app if configured todo so
         if (this.deviceData.eveapp.Enabled == true && this.HomeKitHistory != null) {
-            this.HomeKitHistory.linkToEveHome(this.HomeKitAccessory, this.irrigationService, {GetCommand: this.#EveHomeGetCommand.bind(this),
-                                                                                                SetCommand: this.#EveHomeSetCommand.bind(this),
+            this.HomeKitHistory.linkToEveHome(this.HomeKitAccessory, this.irrigationService, {getcommand: this.#EveHomeGetCommand.bind(this),
+                                                                                                setcommand: this.#EveHomeSetCommand.bind(this),
                                                                                                 debug: true
                                                                                             });
         }
@@ -170,8 +174,8 @@ class IrrigationSystem extends HomeKitDevice {
         this.eventEmitter.addListener(FLOWEVENT, (flowData) => {this.messageHomeKitServices(FLOWEVENT, flowData)});
 
         // Setup HomeKit callbacks
-        this.irrigationService.getCharacteristic(HAP.Characteristic.Active).on("set", (value, callback) => {this.#processActiveCharacteristic(this, value, callback, "system");});
-        this.irrigationService.getCharacteristic(HAP.Characteristic.Active).on("get", (callback) => {this.getPower(callback); });
+        this.irrigationService.getCharacteristic(HAP.Characteristic.Active).on(HAP.CharacteristicEventTypes.SET, (value, callback) => {this.#processActiveCharacteristic(this, value, callback, "system");});
+        this.irrigationService.getCharacteristic(HAP.Characteristic.Active).on(HAP.CharacteristicEventTypes.GET, (callback) => {this.getPower(callback); });
 
         // Setup event timer for various functions
         setInterval(() => {
@@ -183,7 +187,7 @@ class IrrigationSystem extends HomeKitDevice {
             }
         }, 5000);    // Every 5 seconds. maybe every second??
 
-        outputLogging(ACCESSORYNAME, false, "Setup Irrigation System '%s'", serviceName);
+        return postSetupDetails;
     }
 
     setPower(value, callback) {
@@ -443,6 +447,7 @@ class IrrigationSystem extends HomeKitDevice {
     }
 
     #buildIrrigationZones() {
+        var setupDetails = [];
         this.deviceData.zones.forEach((zone, index) => {
            // var tempService = this.HomeKitAccessory.addService(HAP.Service.Valve, zone.Name, (this.zones.length + 1));
             var tempService = this.HomeKitAccessory.addService(HAP.Service.Valve, "", (this.zones.length + 1));
@@ -482,23 +487,24 @@ class IrrigationSystem extends HomeKitDevice {
             };
 
             // Setup HomeKit callbacks
-            tempService.getCharacteristic(HAP.Characteristic.Active).on("set", (value, callback) => {this.#processActiveCharacteristic(this.zones[pushIndex - 1], value, callback, "valve")});
-            tempService.getCharacteristic(HAP.Characteristic.ConfiguredName).on("set", (value, callback) => {this.setZoneName(this.zones[pushIndex - 1], value, callback)});
-            tempService.getCharacteristic(HAP.Characteristic.IsConfigured).on("set", (value, callback) => {this.setZoneEnabled(this.zones[pushIndex - 1], value, callback)});
-            tempService.getCharacteristic(HAP.Characteristic.SetDuration).on("set", (value, callback) => {this.setZoneRuntime(this.zones[pushIndex - 1], value, callback)});
+            tempService.getCharacteristic(HAP.Characteristic.Active).on(HAP.CharacteristicEventTypes.SET, (value, callback) => {this.#processActiveCharacteristic(this.zones[pushIndex - 1], value, callback, "valve")});
+            tempService.getCharacteristic(HAP.Characteristic.ConfiguredName).on(HAP.CharacteristicEventTypes.SET, (value, callback) => {this.setZoneName(this.zones[pushIndex - 1], value, callback)});
+            tempService.getCharacteristic(HAP.Characteristic.IsConfigured).on(HAP.CharacteristicEventTypes.SET, (value, callback) => {this.setZoneEnabled(this.zones[pushIndex - 1], value, callback)});
+            tempService.getCharacteristic(HAP.Characteristic.SetDuration).on(HAP.CharacteristicEventTypes.SET, (value, callback) => {this.setZoneRuntime(this.zones[pushIndex - 1], value, callback)});
 
-            tempService.getCharacteristic(HAP.Characteristic.Active).on("get", (callback) => { callback(null, (this.zones[pushIndex - 1].timer == null ? HAP.Characteristic.Active.INACTIVE : HAP.Characteristic.Active.ACTIVE)); });
-            tempService.getCharacteristic(HAP.Characteristic.ConfiguredName).on("get", (callback) => { callback(null, this.deviceData.zones[index].Name); });
-            tempService.getCharacteristic(HAP.Characteristic.SetDuration).on("get", (callback) => { callback(null, this.deviceData.zones[index].RunTime); });
-            tempService.getCharacteristic(HAP.Characteristic.IsConfigured).on("get", (callback) => { callback(null, this.deviceData.zones[index].Enabled == true ? HAP.Characteristic.IsConfigured.CONFIGURED : HAP.Characteristic.IsConfigured.NOT_CONFIGURED); });
+            tempService.getCharacteristic(HAP.Characteristic.Active).on(HAP.CharacteristicEventTypes.GET, (callback) => { callback(null, (this.zones[pushIndex - 1].timer == null ? HAP.Characteristic.Active.INACTIVE : HAP.Characteristic.Active.ACTIVE)); });
+            tempService.getCharacteristic(HAP.Characteristic.ConfiguredName).on(HAP.CharacteristicEventTypes.GET, (callback) => { callback(null, this.deviceData.zones[index].Name); });
+            tempService.getCharacteristic(HAP.Characteristic.SetDuration).on(HAP.CharacteristicEventTypes.GET, (callback) => { callback(null, this.deviceData.zones[index].RunTime); });
+            tempService.getCharacteristic(HAP.Characteristic.IsConfigured).on(HAP.CharacteristicEventTypes.GET, (callback) => { callback(null, this.deviceData.zones[index].Enabled == true ? HAP.Characteristic.IsConfigured.CONFIGURED : HAP.Characteristic.IsConfigured.NOT_CONFIGURED); });
 
             this.irrigationService.addLinkedService(tempService);   // Link to main irrigation accesssory
-            outputLogging(ACCESSORYNAME, false, "Added zone '%s' using GPIO %s '%s'", zone.Name, (zone.RelayPin.length > 1 ? "pins" : "pin"), zone.RelayPin.toString());
+            setupDetails.push("Zone '" + zone.Name + "' using GPIO " + (zone.RelayPin.length > 1 ? "pins" : "pin") + " '" + zone.RelayPin.toString() + "'");
         });
+        return setupDetails;
     }
 
     #EveHomeGetCommand(EveHomeGetData) {
-        // Pass back extra data for Eve Aqua "get" process command
+        // Pass back extra data for Eve Aqua HAP.CharacteristicEventTypes.GET process command
         // Data will already be an object, our only job is to add/modify to it
    
         EveHomeGetData.firmware = this.deviceData.eveapp.Firmware;
@@ -1153,7 +1159,7 @@ if (config.loaded == true && config.system.MacAddress != "") {
     deviceData.eveapp = Object.assign({}, config.eveapp);   // Shallow copy
     deviceData.zones = config.zones;
     var tempDevice = new IrrigationSystem(deviceData, eventEmitter);
-    tempDevice.add("Irrigation System", HAP.Accessory.Categories.SPRINKLER, true);
+    tempDevice.add("Irrigation System", HAP.Categories.SPRINKLER, true);
     tempDevice.setPower(deviceData.system.PowerState == "on" && deviceData.system.PauseTimeout == 0 ? true : false, null);
 
     // Create virtual weather station if configured 
