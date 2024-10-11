@@ -1,4 +1,11 @@
+<span align="center">
+
 # HomeKit Irrigation System
+
+[![version](https://img.shields.io/github/package-json/v/n0rt0nthec4t/IrrigationSystem)](https://img.shields.io/github/package-json/v/n0rt0nthec4t/IrrigationSystem)
+[![donate](https://badgen.net/badge/donate/paypal/yellow)](https://paypal.me/n0rt0nthec4t/AUS)
+
+</span>
 
 ## Parts
 
