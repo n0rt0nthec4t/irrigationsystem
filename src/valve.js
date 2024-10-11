@@ -124,7 +124,7 @@ export default class Valve {
     this?.log?.debug && this.log.debug('Receieved request to close irrigation valve on relay pin "%s"', this.#GPIO_ValvePin);
     this?.log?.debug &&
       this.log.debug(
-        'Recorded %sL over %sseconds and average rate was %sLPM',
+        'Recorded %sL over %s seconds and average rate was %sLPM',
         this.waterAmount.toFixed(3),
         duration,
         ((this.waterAmount / duration) * 60).toFixed(3),

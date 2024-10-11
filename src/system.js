@@ -516,7 +516,7 @@ export default class IrrigationSystem extends HomeKitDevice {
                   (this.#zones[zone.uuid].valves.length - index - 1);
               if (Math.floor(Date.now() / 1000) >= zoneEndTime && index < this.#zones[zone.uuid].valves.length - 1) {
                 // Reached end of the time for this valve, so stop it and start the next in line
-                valve.closeValve();
+                valve.close();
                 this.#zones[zone.uuid].valves[index + 1].open(); // Open the next valve in the list
               }
             }
