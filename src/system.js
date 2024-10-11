@@ -104,8 +104,7 @@ export default class IrrigationSystem extends HomeKitDevice {
       // Setup set callback for this switch service
       this.switchService.getCharacteristic(this.hap.Characteristic.On).onSet((value) => {
         if (value !== this.deviceData.power) {
-          this?.log?.info && this.log.info('Irrigation system was turned "%s"', value === true ? 'on' : 'off');
-
+          this.setPower(value);
           this.set({ power: value });
         }
       });
@@ -382,7 +381,7 @@ export default class IrrigationSystem extends HomeKitDevice {
 
     this.set({ power: this.deviceData.power });
 
-    this?.log?.info && this.log.info('Irrigation system was turned "%s"', this.deviceData.power === true ? 'On' : 'Off');
+    this?.log?.info && this.log.info('Irrigation system was turned "%s"', this.deviceData.power === true ? 'on' : 'off');
   }
 
   setZoneName(zone, value) {
