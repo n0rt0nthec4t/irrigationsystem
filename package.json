@@ -14,12 +14,7 @@
     "bugs": {
         "url": "https://github.com/n0rt0nthec4t/IrrigationSystem/issues"
     },
-    "funding": [
-        {
-          "type": "paypal",
-          "url": "https://paypal.me/n0rt0nthec4t/AUS"
-        }
-    ],
+    "funding": "https://github.com/n0rt0nthec4t/IrrigationSystem?sponsor=1",
     "keywords": [
         "homekit",
         "irrigation",
