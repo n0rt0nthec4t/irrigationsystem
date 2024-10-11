@@ -1,94 +1,89 @@
 {
-    "tanks": [{
-        "Enabled": true,
-        "TankHeight": 1970,
-        "MinimumLevel": 200,
-        "SensorTrig": 20,
-        "SensorEcho": 21
-    }],
-
-    "system" : {
-        "MaxRunningZones": 1,
-        "MaxZoneRunTime": 7200,
-        "PowerState": "On",
-        "MasterValvePin": 0,
-        "FlowSensorPin": 17,
-        "FlowSensorRate": 0.964,
-        "WaterLeakAlert": false
+    "power": true,
+    "pauseTimeout": 0,
+    "serialNumber": "1234567890",
+    "hkPairingCode": "031-45-154",
+    "options": {
+        "waterLeakAlert": false,
+        "sensorFlowPin": 17,
+        "flowRate": 0.964,
+        "maxRuntime": 7200,
+        "latitude": 0.0,
+        "longitude": 0.0,
+        "elevation": 600,
+        "eveHistory": true,
+        "powerSwitch": false,
+        "debug": false
     },
-
-    "eveapp" : {
-        "Enabled" : true,
-        "Firmware" : 1208,
-        "Latitude" : 0.0,
-        "Longitude" : 0.0,
-        "FlowRate" : 0
-    },
-
-    "weather" : {
-        "Enabled" : true,
-        "APIKey": "2bc430cd83ab80f77fde5541d27d42bb",
-        "Latitude": -35.230420,
-        "Longitude": 149.087740,
-        "Elevation": 610
-    },
-    
-    "zones": [{
-        "Name": "Zone 1",
-        "RelayPin": 14,
-        "RunTime": 1200,
-        "Enabled": true,
-        "MasterValve": false
-    }, {
-        "Name": "Zone 2",
-        "RelayPin": 15,
-        "RunTime": 1200,
-        "Enabled": true,
-        "MasterValve": false
-    }, {
-        "Name": "Zone 3",
-        "RelayPin": 18,
-        "RunTime": 1200,
-        "Enabled": true,
-        "MasterValve": false
-    }, {
-        "Name": "Zone 4",
-        "RelayPin": 23,
-        "RunTime": 1200,
-        "Enabled": true,
-        "MasterValve": false
-    }, {
-        "Name": "Zone 5",
-        "RelayPin": 24,
-        "RunTime": 1200,
-        "Enabled": true,
-        "MasterValve": false
-    }, {
-        "Name": "Zone 6",
-        "RelayPin": 25,
-        "RunTime": 1200,
-        "Enabled": true,
-        "MasterValve": false
-    }, {
-        "Name": "Zone 7",
-        "RelayPin": 8,
-        "RunTime": 1200,
-        "Enabled": true,
-        "MasterValve": false
-    }, {
-        "Name": "Zone 8",
-        "RelayPin": 7,
-        "RunTime": 1200,
-        "MaxRunTime": 7200,
-        "Enabled": true,
-        "MasterValve": false
-    }],
-
-    "groups" : [{ 
-        "Name": "All Zones",
-        "Zones" : ["Zone 1", "Zone 2", "Zone 3", "Zone 4", "Zone 5", "Zone 6", "Zone 7", "Zone 8"],
-        "RunTime": 1200,
-        "SeperateRunTime" : true,
-        "Enabled": true 
-    }]
+    "tanks": [
+        {
+            "name": "Tank 1",
+            "enabled": true,
+            "capacity": 5000,
+            "sensorTrigPin": 20,
+            "sensorEchoPin": 21,
+            "sensorHeight": 1970,
+            "minimumLevel": 200
+        }
+    ],
+    "zones": [
+        {
+            "name": "Zone 1",
+            "enabled": true,
+            "relayPin": 14,
+            "runtime": 1200
+        },
+        {
+            "name": "Zone 2",
+            "enabled": true,
+            "relayPin": 15,
+            "runtime": 1200
+        },
+        {
+            "name": "Zone 3",
+            "enabled": true,
+            "relayPin": 18,
+            "runtime": 1200
+        },
+        {
+            "name": "Zone 4",
+            "enabled": true,
+            "relayPin": 23,
+            "runtime": 1200
+        },
+        {
+            "name": "Zone 5",
+            "enabled": true,
+            "relayPin": 24,
+            "runtime": 1200
+        },
+        {
+            "name": "Zone 6",
+            "enabled": true,
+            "relayPin": 25,
+            "runtime": 1200
+        },
+        {
+            "name": "Zone 7",
+            "enabled": true,
+            "relayPin": 8,
+            "runtime": 1200
+        },
+        {
+            "name": "Zone 8",
+            "enabled": true,
+            "relayPin": 7,
+            "runtime": 1200
+        },
+        {
+            "name": "Zone 9",
+            "enabled": true,
+            "relayPin": [14, 15, 18, 23, 24, 25, 8, 7],
+            "runtime": 7200
+        }
+    ],
+    "programs": {
+       "enabled": false,
+       "schedules": []
+    }
 }
