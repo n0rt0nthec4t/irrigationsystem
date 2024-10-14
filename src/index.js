@@ -140,7 +140,7 @@ function loadConfiguration(filename) {
         let unnamedCount = 1;
         value.forEach((tank) => {
           let tempTank = {
-            uuid: tank?.uuid !== undefined && tank.uuid !== '' ? tank.uuid : crypto.randomUUID(),
+            uuid: tank?.uuid !== undefined && tank.uuid !== '' ? tank.uuid.trim() : crypto.randomUUID(),
             name: tank?.name !== undefined && tank.name !== '' ? makeHomeKitName(tank.name.trim()) : 'Tank ' + unnamedCount++,
             enabled: tank?.enabled === true,
             capacity: isNaN(tank?.capacity) === false && Number(tank.capacity) > 0 ? Number(tank.capacity) : 0,
@@ -175,7 +175,7 @@ function loadConfiguration(filename) {
         let unnamedCount = 1;
         value.forEach((zone) => {
           let tempZone = {
-            uuid: zone?.uuid !== undefined && zone.uuid !== '' ? zone.uuid : crypto.randomUUID(),
+            uuid: zone?.uuid !== undefined && zone.uuid !== '' ? zone.uuid.trim() : crypto.randomUUID(),
             name: zone?.name !== undefined && zone.zone !== '' ? makeHomeKitName(zone.name.trim()) : 'Zone ' + unnamedCount++,
             enabled: zone?.enabled === true,
             runtime: isNaN(zone?.runtime) === false ? Number(zone.runtime) : 300, // 5mins by default

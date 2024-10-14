@@ -500,10 +500,11 @@ export default class IrrigationSystem extends HomeKitDevice {
         Math.floor(Date.now() / 1000) + this.#zones[zone.uuid].service.getCharacteristic(this.hap.Characteristic.SetDuration).value;
       this.#zones[zone.uuid].timer = setInterval(() => {
         if (Math.floor(Date.now() / 1000) < endTime) {
+          // Update HomeKit with remaining duration for zone
           this.#zones[zone.uuid].service.updateCharacteristic(
             this.hap.Characteristic.RemainingDuration,
             endTime - Math.floor(Date.now() / 1000),
-          ); // Update HomeKit with remaining duration for zone
+          );
 
           this.#zones[zone.uuid].valves.forEach((valve, index) => {
             if (valve.isOpen() === true) {
