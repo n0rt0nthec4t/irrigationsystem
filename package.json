@@ -6,15 +6,15 @@
     "description": "HomeKit irrigation system using HAP-NodeJS library",
     "author": "n0rt0nthec4t",
     "license": "Apache-2.0",
-    "homepage": "https://github.com/n0rt0nthec4t/IrrigationSystem/#readme",
+    "homepage": "https://github.com/n0rt0nthec4t/irrigationsystem/#readme",
     "repository": {
         "type": "git",
-        "url": "git+https://github.com/n0rt0nthec4t/IrrigationSystem.git"
+        "url": "git+https://github.com/n0rt0nthec4t/irrigationsystem.git"
     },
     "bugs": {
-        "url": "https://github.com/n0rt0nthec4t/IrrigationSystem/issues"
+        "url": "https://github.com/n0rt0nthec4t/irrigationsystem/issues"
     },
-    "funding": "https://github.com/n0rt0nthec4t/IrrigationSystem?sponsor=1",
+    "funding": "https://github.com/n0rt0nthec4t/irrigationsystem?sponsor=1",
     "keywords": [
         "homekit",
         "irrigation",

@@ -2,7 +2,7 @@
 
 # HomeKit Irrigation System
 
-[![version](https://img.shields.io/github/package-json/v/n0rt0nthec4t/IrrigationSystem)](https://img.shields.io/github/package-json/v/n0rt0nthec4t/IrrigationSystem)
+[![version](https://img.shields.io/github/package-json/v/n0rt0nthec4t/irrigationsystem)](https://img.shields.io/github/package-json/v/n0rt0nthec4t/irrigationsystem)
 
 </span>
 
