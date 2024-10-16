@@ -1,4 +1,4 @@
-// Code version 11/10/2024
+// Code version 17/10/2024
 // Mark Hulskamp
 'use strict';
 
@@ -85,6 +85,10 @@ export default class IrrigationSystem extends HomeKitDevice {
     if (this.irrigationService === undefined) {
       this.irrigationService = this.accessory.addService(this.hap.Service.IrrigationSystem, '', 1);
     }
+    this.irrigationService.updateCharacteristic(
+      this.hap.Characteristic.Active,
+      this.deviceData.power === true ? this.hap.Characteristic.Active.ACTIVE : this.hap.Characteristic.Active.INACTIVE,
+    );
     this.irrigationService.setPrimaryService();
 
     // Setup callbacks for characteristics
@@ -139,7 +143,7 @@ export default class IrrigationSystem extends HomeKitDevice {
             tank.minimumLevel,
             tank.sensorTrigPin,
             tank.sensorEchoPin,
-            this.eventEmitter,
+            this.#eventEmitter,
           );
 
           postSetupDetails.push('Watertank "' + tank.name + '" with "' + tank.capacity + '" Litres');
@@ -151,7 +155,7 @@ export default class IrrigationSystem extends HomeKitDevice {
     if (Array.isArray(this.deviceData?.zones) === true && this.deviceData.zones.length > 0) {
       this?.log?.debug('Creating defined irrigation zones from configuration');
       this.deviceData.zones.forEach((zone, index) => {
-        let tempService = this.accessory.addService(this.hap.Service.Valve, '', index + 1);
+        let tempService = this.accessory.addService(this.hap.Service.Valve, 'Valve ' + (index + 1), index + 1);
         tempService.addCharacteristic(this.hap.Characteristic.IsConfigured);
         tempService.addCharacteristic(this.hap.Characteristic.RemainingDuration);
         tempService.addCharacteristic(this.hap.Characteristic.SetDuration);
@@ -350,13 +354,8 @@ export default class IrrigationSystem extends HomeKitDevice {
     if (value === 'off' || value === 'OFF' || value === false || value === this.hap.Characteristic.Active.INACTIVE) {
       // For any valves that are opened, finish them running gracefully
       this.deviceData.zones.forEach((zone) => {
-        if (this.#zones?.[zone?.uuid]?.service !== undefined) {
-          if (
-            this.#zones[zone?.uuid].service.getCharacteristic(this.hap.Characteristic.Active).value ===
-            this.hap.Characteristic.Active.ACTIVE
-          ) {
-            this.setZoneActive(zone, this.hap.Characteristic.Active.INACTIVE);
-          }
+        if (this.#zones?.[zone?.uuid]?.service !== undefined && this.#zones?.[zone?.uuid]?.timer !== undefined) {
+          this.setZoneActive(zone, this.hap.Characteristic.Active.INACTIVE);
         }
       });
 
@@ -419,9 +418,7 @@ export default class IrrigationSystem extends HomeKitDevice {
 
     // If we're making the zone 'disabled' and if the zone is currently active, stop it first
     if (value === this.hap.Characteristic.IsConfigured.NOT_CONFIGURED || value === false) {
-      if (
-        this.#zones[zone.uuid].service.getCharacteristic(this.hap.Characteristic.Active).value === this.hap.Characteristic.Active.ACTIVE
-      ) {
+      if (this.#zones?.[zone?.uuid]?.service !== undefined && this.#zones?.[zone?.uuid]?.timer !== undefined) {
         this.setZoneActive(zone, this.hap.Characteristic.Active.INACTIVE);
       }
     }
@@ -561,7 +558,7 @@ export default class IrrigationSystem extends HomeKitDevice {
   }
 
   messageServices(type, message) {
-    if (type === Valve.WATERLEVEL) {
+    if (type === WaterTank.WATERLEVEL) {
       // Water tank level event, so update total water percentage
       // <---- TODO Need to "smooth" our readings to eliminate random reading
       let totalPercentage = 0;
