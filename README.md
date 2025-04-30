@@ -103,7 +103,7 @@ The following options are available in IrrigationSystem_config.json **options** 
 I've included 'C' source code (usonic_measure.c) for a program which reads distances via an ultrasonic sensor. I used a JSN-SR04T waterproof ultrasonic sensor in my progect. The particular model has a minimum reading distance of 200mm and a maximum distance of 4500mm. This is mounted ontop of my watertank at 200mm above the maximum waterlevel for the tank.
 
 This program requires the wiringPI library to be installed before compiliation of the program
-- sudo apt install wiringPI
+- sudo apt install wiringPi
 
 It can be compiled with:
 - gcc -o dist/usonic_measure -lwiringPi usonic_measure.c
