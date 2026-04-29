@@ -4,3 +4,6 @@
 [submodule "src/HomeKitHistory"]
 	path = src/HomeKitHistory
 	url = https://github.com/n0rt0nthec4t/HomeKitHistory.git
+[submodule "src/HomeKitUI"]
+	path = src/HomeKitUI
+	url = https://github.com/n0rt0nthec4t/HomeKitUI.git

@@ -1,0 +1,151 @@
+{
+  "type": "object",
+  "properties": {
+    "zones": {
+      "type": "array",
+      "title": "Zones",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "default": "Zone"
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": true
+          },
+          "runtime": {
+            "type": "integer",
+            "title": "Runtime (seconds)",
+            "default": 300,
+            "minimum": 0,
+            "maximum": 7200
+          },
+          "relayPin": {
+            "type": "array",
+            "title": "Relay GPIO",
+            "items": {
+              "type": "integer",
+              "title": "GPIO",
+              "minimum": 0,
+              "maximum": 26
+            }
+          }
+        }
+      }
+    },
+    "tanks": {
+      "type": "array",
+      "title": "Water Tanks",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "default": "Tank"
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": true
+          },
+          "capacity": {
+            "type": "number",
+            "title": "Capacity (L)",
+            "default": 0,
+            "minimum": 0
+          },
+          "sensorTrigPin": {
+            "type": "integer",
+            "title": "Sensor Trigger GPIO",
+            "minimum": 0,
+            "maximum": 26
+          },
+          "sensorEchoPin": {
+            "type": "integer",
+            "title": "Sensor Echo GPIO",
+            "minimum": 0,
+            "maximum": 26
+          },
+          "sensorHeight": {
+            "type": "number",
+            "title": "Sensor Height (mm)",
+            "default": 0,
+            "minimum": 0
+          },
+          "minimumLevel": {
+            "type": "number",
+            "title": "Minimum Usable Level (mm)",
+            "default": 0,
+            "minimum": 0
+          }
+        }
+      }
+    },
+
+    "options": {
+      "type": "object",
+      "title": "Options",
+      "properties": {
+        "powerSwitch": {
+          "type": "boolean",
+          "title": "Virtual Power Switch",
+          "default": false
+        },
+        "leakSensor": {
+          "type": "boolean",
+          "title": "Leak Sensor",
+          "default": false
+        },
+        "waterLeakAlert": {
+          "type": "boolean",
+          "title": "Water Leaking Alerts",
+          "default": false
+        },
+        "sensorFlowPin": {
+          "type": "integer",
+          "title": "Flow Sensor GPIO",
+          "minimum": 0,
+          "maximum": 26
+        },
+        "flowRate": {
+          "type": "number",
+          "title": "Flow Rate Calibration",
+          "default": 0
+        },
+        "maxRuntime": {
+          "type": "integer",
+          "title": "Maximum Runtime (seconds)",
+          "default": 7200,
+          "minimum": 0,
+          "maximum": 86400
+        },
+        "latitude": {
+          "type": "number",
+          "title": "Latitude",
+          "minimum": -90,
+          "maximum": 90,
+          "default": 0
+        },
+        "longitude": {
+          "type": "number",
+          "title": "Longitude",
+          "minimum": -180,
+          "maximum": 180,
+          "default": 0
+        },
+        "elevation": {
+          "type": "number",
+          "title": "Elevation (m)",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 8848
+        }
+      }
+    }
+  }
+}

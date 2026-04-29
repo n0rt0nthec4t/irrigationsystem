@@ -1,89 +1,101 @@
 {
-    "power": true,
-    "pauseTimeout": 0,
-    "serialNumber": "1234567890",
-    "hkPairingCode": "031-45-154",
-    "options": {
-        "waterLeakAlert": false,
-        "sensorFlowPin": 17,
-        "flowRate": 0.964,
-        "maxRuntime": 7200,
-        "latitude": 0.0,
-        "longitude": 0.0,
-        "elevation": 600,
-        "eveHistory": true,
-        "powerSwitch": false,
-        "debug": false
-    },
-    "tanks": [
-        {
-            "name": "Tank 1",
-            "enabled": true,
-            "capacity": 5000,
-            "sensorTrigPin": 20,
-            "sensorEchoPin": 21,
-            "sensorHeight": 1970,
-            "minimumLevel": 200
-        }
-    ],
-    "zones": [
-        {
-            "name": "Zone 1",
-            "enabled": true,
-            "relayPin": 14,
-            "runtime": 1200
-        },
-        {
-            "name": "Zone 2",
-            "enabled": true,
-            "relayPin": 15,
-            "runtime": 1200
-        },
-        {
-            "name": "Zone 3",
-            "enabled": true,
-            "relayPin": 18,
-            "runtime": 1200
-        },
-        {
-            "name": "Zone 4",
-            "enabled": true,
-            "relayPin": 23,
-            "runtime": 1200
-        },
-        {
-            "name": "Zone 5",
-            "enabled": true,
-            "relayPin": 24,
-            "runtime": 1200
-        },
-        {
-            "name": "Zone 6",
-            "enabled": true,
-            "relayPin": 25,
-            "runtime": 1200
-        },
-        {
-            "name": "Zone 7",
-            "enabled": true,
-            "relayPin": 8,
-            "runtime": 1200
-        },
-        {
-            "name": "Zone 8",
-            "enabled": true,
-            "relayPin": 7,
-            "runtime": 1200
-        },
-        {
-            "name": "Zone 9",
-            "enabled": true,
-            "relayPin": [14, 15, 18, 23, 24, 25, 8, 7],
-            "runtime": 7200
-        }
-    ],
-    "programs": {
-       "enabled": false,
-       "schedules": []
+  "power": true,
+  "pauseTimeout": 0,
+  "serialNumber": "1234567890",
+  "hkUsername": "75:B0:CC:A8:28:E3",
+  "tanks": [
+    {
+      "name": "Tank 1",
+      "enabled": true,
+      "capacity": 5000,
+      "sensorTrigPin": 20,
+      "sensorEchoPin": 21,
+      "sensorHeight": 1970,
+      "minimumLevel": 200
     }
+  ],
+  "zones": [
+    {
+      "name": "Zone 1",
+      "enabled": true,
+      "runtime": 1200,
+      "relayPin": 14
+    },
+    {
+      "name": "Zone 2",
+      "enabled": true,
+      "runtime": 1200,
+      "relayPin": 15
+    },
+    {
+      "name": "Zone 3",
+      "enabled": true,
+      "runtime": 1200,
+      "relayPin": 18
+    },
+    {
+      "name": "Zone 4",
+      "enabled": true,
+      "runtime": 1200,
+      "relayPin": 23
+    },
+    {
+      "name": "Zone 5",
+      "enabled": true,
+      "runtime": 1200,
+      "relayPin": 24
+    },
+    {
+      "name": "Zone 6",
+      "enabled": true,
+      "runtime": 1200,
+      "relayPin": 25
+    },
+    {
+      "name": "Zone 7",
+      "enabled": true,
+      "runtime": 1200,
+      "relayPin": 8
+    },
+    {
+      "name": "Zone 8",
+      "enabled": true,
+      "runtime": 1200,
+      "relayPin": 7
+    },
+    {
+      "name": "Zone 9",
+      "enabled": true,
+      "runtime": 7200,
+      "relayPin": [
+        14,
+        15,
+        18,
+        23,
+        24,
+        25,
+        8,
+        7
+      ]
+    }
+  ],
+  "programs": {
+    "enabled": false,
+    "schedules": []
+  },
+  "options": {
+    "waterLeakAlert": false,
+    "sensorFlowPin": 17,
+    "flowRate": 0.964,
+    "maxRuntime": 7200,
+    "latitude": 0,
+    "longitude": 0,
+    "leakSensor": false,
+    "elevation": 600,
+    "eveHistory": true,
+    "powerSwitch": false,
+    "debug": false,
+    "hkPairingCode": "031-45-154",
+    "webUIPort": 8581
+  }
 }

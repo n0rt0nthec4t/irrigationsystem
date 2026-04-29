@@ -1,4 +1,4 @@
-// Code version 17/10/2024
+// Code version 2025/06/16
 // Mark Hulskamp
 'use strict';
 
@@ -6,22 +6,23 @@
 import GPIO from 'rpio';
 
 // Define nodejs module requirements
-import process from 'node:process';
-import { Buffer } from 'node:buffer';
-import EventEmitter from 'node:events';
-import { setInterval, clearInterval, setTimeout, clearTimeout } from 'node:timers';
+import { setTimeout, clearTimeout } from 'node:timers';
 
 // Import our modules
 import HomeKitDevice from './HomeKitDevice.js';
 import WaterTank from './watertank.js';
 import Valve from './valve.js';
+import { crc32 } from './utils.js';
 
 Valve.GPIO = GPIO; // Setup the GPIO library for the valve class
 
-const WATERLEAKTIMEOUT = 10000; // Milliseconds after a water valve is closed before we can report on any water leak
-const FLOWDATABUFFER = 30000; // Milliseconds of water flow data to store. Used to determine constant leak
+const WATER_LEAK_TIMEOUT = 10000; // Milliseconds after a water valve is closed before we can report on any water leak
+const FLOW_DATA_BUFFER = 30000; // Milliseconds of water flow data to store. Used to determine constant leak
 
 export default class IrrigationSystem extends HomeKitDevice {
+  static TYPE = 'IrrigationSystem';
+  static VERSION = '2026.04.29';
+
   irrigationService = undefined; // HomeKit service for this irrigation system
   leakSensorService = undefined; // HomeKit service for a "leak" sensor
   switchService = undefined;
@@ -32,16 +33,11 @@ export default class IrrigationSystem extends HomeKitDevice {
   leakDetected = false; // No Water leak detected yet
 
   // Internal data only for this class
-  #eventEmitter = undefined;
-  #lastFlowTime = undefined; // Time of last flow pulse recieved
-  #flowPulseCounter = undefined; // Flow sensor pulse counter
-  #flowTimer = undefined;
-  #pauseTimer = undefined;
   #tanks = {}; // Object for tanks we actually created
   #zones = {}; // Object for zones we actually created
 
-  constructor(accessory, api, log, eventEmitter, deviceData) {
-    super(accessory, api, log, eventEmitter, deviceData);
+  constructor(accessory, api, log, deviceData) {
+    super(accessory, api, log, deviceData);
 
     // Fix 'mis-named' characteristic option until changed in hap-nodejs based code (v1.1.x has fix)
     if (this?.hap?.Characteristic?.ProgramMode?.PROGRAM_SCHEDULED_MANUAL_MODE_ !== undefined) {
@@ -51,349 +47,374 @@ export default class IrrigationSystem extends HomeKitDevice {
     // Init the GPIO (rpio) library. This only needs to be done once before using library functions
     GPIO.init({ gpiomem: true });
     GPIO.init({ mapping: 'gpio' });
-
-    // Validate if eventEmitter object passed to us is an instance of EventEmitter
-    if (eventEmitter instanceof EventEmitter === true) {
-      this.#eventEmitter = eventEmitter;
-    }
-
-    // Setup to close any opened valves if the process is stopped
-    let signals = { SIGINT: 2, SIGTERM: 15 };
-    Object.keys(signals).forEach((signal) => {
-      process.on(signal, () => {
-        this?.log?.debug && this.log.debug('Received signal to terminate process. Closing any opened values');
-        Object.values(this.#zones).forEach((zone) => {
-          zone.valves.forEach((valve) => {
-            if (valve.isOpen() === true) {
-              valve.close();
-            }
-          });
-        });
-
-        process.exit(128 + signals[signal]);
-      });
-    });
   }
 
   // Class functions
-  addServices() {
-    // Create extra details for output
-    let postSetupDetails = [];
+  onAdd() {
+    // Create / get primary irrigation system service and register message handler
+    this.irrigationService = this.addHKService(this.hap.Service.IrrigationSystem, '', 1, {
+      messages: this.message.bind(this),
+    });
+    this.irrigationService.setPrimaryService();
 
-    // Setup the irrigation service if not already present on the accessory
-    this.irrigationService = this.accessory.getService(this.hap.Service.IrrigationSystem);
-    if (this.irrigationService === undefined) {
-      this.irrigationService = this.accessory.addService(this.hap.Service.IrrigationSystem, '', 1);
-    }
+    // Sync initial power state to HomeKit
     this.irrigationService.updateCharacteristic(
       this.hap.Characteristic.Active,
       this.deviceData.power === true ? this.hap.Characteristic.Active.ACTIVE : this.hap.Characteristic.Active.INACTIVE,
     );
-    this.irrigationService.setPrimaryService();
 
-    // Setup callbacks for characteristics
-    this.irrigationService.getCharacteristic(this.hap.Characteristic.Active).onSet((value) => {
-      this.#processActiveCharacteristic(this.irrigationService, value, 'system');
-    });
-    this.irrigationService.getCharacteristic(this.hap.Characteristic.Active).onGet(() => {
-      return this.deviceData.power === true ? this.hap.Characteristic.Active.ACTIVE : this.hap.Characteristic.Active.INACTIVE;
+    // Active characteristic (system on/off)
+    this.addHKCharacteristic(this.irrigationService, this.hap.Characteristic.Active, {
+      onSet: (value) => {
+        this.#processActiveCharacteristic(this.irrigationService, value, 'system');
+      },
+      onGet: () => {
+        return this.deviceData.power === true ? this.hap.Characteristic.Active.ACTIVE : this.hap.Characteristic.Active.INACTIVE;
+      },
     });
 
-    // Add an optional "virtual" power switch if configured
-    this.switchService = this.accessory.getService(this.hap.Service.Switch);
+    // Optional virtual power switch (linked service)
     if (this.deviceData?.powerSwitch === true) {
-      if (this.switchService === undefined) {
-        this.switchService = this.accessory.addService(this.hap.Service.Switch, '', 1);
-      }
-      // Setup set callback for this switch service
-      this.switchService.getCharacteristic(this.hap.Characteristic.On).onSet((value) => {
-        if (value !== this.deviceData.power) {
-          this.setPower(value);
-          this.set({ power: value });
-        }
-      });
+      this.switchService = this.addHKService(this.hap.Service.Switch, '', 1);
+      this.irrigationService.addLinkedService(this.switchService);
 
-      this.switchService.getCharacteristic(this.hap.Characteristic.On).onGet(() => {
-        return this.deviceData.power === true;
+      this.addHKCharacteristic(this.switchService, this.hap.Characteristic.On, {
+        onSet: (value) => {
+          if (value !== this.deviceData.power) {
+            this.setPower(value);
+          }
+        },
+        onGet: () => {
+          return this.deviceData.power === true;
+        },
       });
-    }
-    if (this.switchService !== undefined && this.deviceData?.powerSwitch !== true) {
-      // No longer required to have the switch service
-      // This is to handle Homebridge cached restored accessories and if configuration options have changed
-      this?.log?.debug && this.log.debug('Configuration has changed to no-longer have virtual power switch');
-      this.accessory.removeService(this.switchService);
+    } else {
+      // Remove switch if configuration no longer requires it
+      this.switchService = this.accessory.getService(this.hap.Service.Switch);
+      if (this.switchService !== undefined) {
+        this.accessory.removeService(this.switchService);
+      }
       this.switchService = undefined;
     }
 
-    // Add in any defined water tanks
+    // Create water tanks (if configured)
     if (Array.isArray(this.deviceData?.tanks) === true && this.deviceData.tanks.length > 0) {
-      this?.log?.debug('Creating defined watertanks from configuration');
-      this.deviceData.tanks.forEach((tank) => {
+      this.log?.debug?.('Creating defined watertanks from configuration');
+
+      for (let tank of this.deviceData.tanks) {
         if (tank?.enabled === true && tank?.sensorEchoPin !== undefined && tank?.sensorTrigPin !== undefined) {
+          // Ensure WaterLevel characteristic exists on irrigation service
           if (this.irrigationService.testCharacteristic(this.hap.Characteristic.WaterLevel) === false) {
-            // We haven't added the water level characteristic yet to the irringation service
-            // This added once we have the first 'enabled' water tank
             this.irrigationService.addCharacteristic(this.hap.Characteristic.WaterLevel);
           }
 
-          this.#tanks[tank.uuid] = new WaterTank(
-            this.log,
-            tank.uuid,
-            tank.sensorHeight,
-            tank.minimumLevel,
-            tank.sensorTrigPin,
-            tank.sensorEchoPin,
-            this.#eventEmitter,
-          );
-
-          postSetupDetails.push('Watertank "' + tank.name + '" with "' + tank.capacity + '" Litres');
+          this.#tanks[tank.uuid] = new WaterTank(this.log, this.uuid, tank);
+          this.postSetupDetail('Watertank "' + tank.name + '" with "' + tank.capacity + '" Litres');
         }
-      });
+      }
     }
 
-    // Setup any defined "physical" and/or "virtual" irrigation zones
+    // Create irrigation zones
     if (Array.isArray(this.deviceData?.zones) === true && this.deviceData.zones.length > 0) {
-      this?.log?.debug('Creating defined irrigation zones from configuration');
-      this.deviceData.zones.forEach((zone, index) => {
-        let tempService = this.accessory.addService(this.hap.Service.Valve, 'Valve ' + (index + 1), index + 1);
-        tempService.addCharacteristic(this.hap.Characteristic.IsConfigured);
-        tempService.addCharacteristic(this.hap.Characteristic.RemainingDuration);
-        tempService.addCharacteristic(this.hap.Characteristic.SetDuration);
-        tempService.addCharacteristic(this.hap.Characteristic.ConfiguredName);
-        tempService.addCharacteristic(this.hap.Characteristic.Identifier);
+      this.log?.debug?.('Creating defined irrigation zones from configuration');
 
-        // Setup characteristic property ranges
-        tempService.getCharacteristic(this.hap.Characteristic.SetDuration).setProps({ maxValue: this.deviceData.maxRuntime });
-        tempService.getCharacteristic(this.hap.Characteristic.RemainingDuration).setProps({ maxValue: this.deviceData.maxRuntime });
+      for (let [index, zone] of this.deviceData.zones.entries()) {
+        let service = this.addHKService(this.hap.Service.Valve, 'Valve ' + (index + 1), index + 1);
 
-        tempService.updateCharacteristic(this.hap.Characteristic.ValveType, this.hap.Characteristic.ValveType.IRRIGATION);
-        tempService.updateCharacteristic(this.hap.Characteristic.ConfiguredName, zone.name);
-        tempService.updateCharacteristic(
+        // Enable / disable zone
+        this.addHKCharacteristic(service, this.hap.Characteristic.IsConfigured, {
+          onSet: (value) => this.setZoneEnabled(this.deviceData.zones[index], value),
+          onGet: () =>
+            this.deviceData.zones[index].enabled === true
+              ? this.hap.Characteristic.IsConfigured.CONFIGURED
+              : this.hap.Characteristic.IsConfigured.NOT_CONFIGURED,
+        });
+
+        // Remaining duration (read-only, controlled by runtime)
+        this.addHKCharacteristic(service, this.hap.Characteristic.RemainingDuration, {
+          props: { maxValue: this.deviceData.maxRuntime },
+        });
+
+        // Set runtime duration
+        this.addHKCharacteristic(service, this.hap.Characteristic.SetDuration, {
+          onSet: (value) => this.setZoneRuntime(this.deviceData.zones[index], value),
+          onGet: () => this.deviceData.zones[index].runtime,
+          props: { maxValue: this.deviceData.maxRuntime },
+        });
+
+        // Zone name
+        this.addHKCharacteristic(service, this.hap.Characteristic.ConfiguredName, {
+          onSet: (value) => this.setZoneName(this.deviceData.zones[index], value),
+          onGet: () => this.deviceData.zones[index].name,
+        });
+
+        // Active state (start/stop zone)
+        this.addHKCharacteristic(service, this.hap.Characteristic.Active, {
+          onSet: (value) => this.#processActiveCharacteristic(this.deviceData.zones[index], value, 'valve'),
+          onGet: () =>
+            this.#zones[this.deviceData.zones[index].uuid].timer === true
+              ? this.hap.Characteristic.Active.ACTIVE
+              : this.hap.Characteristic.Active.INACTIVE,
+        });
+
+        // Identifier (stable ID for HomeKit)
+        this.addHKCharacteristic(service, this.hap.Characteristic.Identifier);
+
+        // Initial characteristic state
+        service.updateCharacteristic(this.hap.Characteristic.ValveType, this.hap.Characteristic.ValveType.IRRIGATION);
+        service.updateCharacteristic(this.hap.Characteristic.ConfiguredName, zone.name);
+        service.updateCharacteristic(
           this.hap.Characteristic.IsConfigured,
           zone.enabled === true ? this.hap.Characteristic.IsConfigured.CONFIGURED : this.hap.Characteristic.IsConfigured.NOT_CONFIGURED,
         );
-        tempService.updateCharacteristic(this.hap.Characteristic.Active, this.hap.Characteristic.Active.INACTIVE);
-        tempService.updateCharacteristic(this.hap.Characteristic.InUse, this.hap.Characteristic.InUse.NOT_IN_USE);
-        tempService.updateCharacteristic(this.hap.Characteristic.RemainingDuration, 0);
-        tempService.updateCharacteristic(this.hap.Characteristic.SetDuration, zone.runtime);
-        tempService.updateCharacteristic(this.hap.Characteristic.Identifier, crc32(zone.uuid.toUpperCase()));
+        service.updateCharacteristic(this.hap.Characteristic.Active, this.hap.Characteristic.Active.INACTIVE);
+        service.updateCharacteristic(this.hap.Characteristic.InUse, this.hap.Characteristic.InUse.NOT_IN_USE);
+        service.updateCharacteristic(this.hap.Characteristic.RemainingDuration, 0);
+        service.updateCharacteristic(this.hap.Characteristic.SetDuration, zone.runtime);
+        service.updateCharacteristic(this.hap.Characteristic.Identifier, crc32(zone.uuid.toUpperCase()));
 
-        if (zone?.relayPin !== undefined && Array.isArray(zone.relayPin) === false) {
-          // Since single relay pin, this is a "physical" zone
-          this.#zones[zone.uuid] = {
-            service: tempService,
-            valves: [new Valve(this.log, zone.name, zone.relayPin, this.#eventEmitter)],
-            timer: undefined,
-            totalwater: 0,
-            totalduration: 0,
-          };
-        }
+        // Build valve(s) for this zone (supports multi-relay zones)
+        let relayArray = Array.isArray(zone.relayPin) === true ? zone.relayPin : [zone.relayPin];
 
-        if (Array.isArray(zone?.relayPin) === true) {
-          // Since relay pin in is an array, we'll treat this as a "virtual" zone
-          let valveArray = [];
-          zone.relayPin.forEach((relayPin) => {
-            valveArray.push(new Valve(this.log, zone.name, relayPin, this.#eventEmitter));
-          });
-          this.#zones[zone.uuid] = {
-            service: tempService,
-            valves: valveArray,
-            timer: undefined,
-            totalwater: 0,
-            totalduration: 0,
-          };
-        }
+        let valveArray = relayArray
+          .filter((relayPin) => Number.isFinite(Number(relayPin)) === true)
+          .map(
+            (relayPin) =>
+              new Valve(this.log, this.uuid, {
+                uuid: zone.uuid + '-' + relayPin,
+                name: zone.name,
+                relayPin,
+                sensorFlowPin: this.deviceData?.sensorFlowPin,
+                flowRate: this.deviceData?.flowRate,
+              }),
+          );
 
-        // Setup callbacks for characteristics
-        tempService.getCharacteristic(this.hap.Characteristic.Active).onSet((value) => {
-          this.#processActiveCharacteristic(this.deviceData.zones[index], value, 'valve');
-        });
-        tempService.getCharacteristic(this.hap.Characteristic.ConfiguredName).onSet((value) => {
-          this.setZoneName(this.deviceData.zones[index], value);
-        });
-        tempService.getCharacteristic(this.hap.Characteristic.IsConfigured).onSet((value) => {
-          this.setZoneEnabled(this.deviceData.zones[index], value);
-        });
-        tempService.getCharacteristic(this.hap.Characteristic.SetDuration).onSet((value) => {
-          this.setZoneRuntime(this.deviceData.zones[index], value);
-        });
+        // Store internal zone state
+        this.#zones[zone.uuid] = {
+          service,
+          valves: valveArray,
+          timer: undefined,
+          endTime: undefined,
+          totalwater: 0,
+          totalduration: 0,
+        };
 
-        tempService.getCharacteristic(this.hap.Characteristic.Active).onGet(() => {
-          return this.#zones[this.deviceData.zones[index].uuid].timer === undefined
-            ? this.hap.Characteristic.Active.INACTIVE
-            : this.hap.Characteristic.Active.ACTIVE;
-        });
-        tempService.getCharacteristic(this.hap.Characteristic.ConfiguredName).onGet(() => {
-          return this.deviceData.zones[index].name;
-        });
-        tempService.getCharacteristic(this.hap.Characteristic.SetDuration).onGet(() => {
-          return this.deviceData.zones[index].runtime;
-        });
-        tempService.getCharacteristic(this.hap.Characteristic.IsConfigured).onGet(() => {
-          return this.deviceData.zones[index].enabled === true
-            ? this.hap.Characteristic.IsConfigured.CONFIGURED
-            : this.hap.Characteristic.IsConfigured.NOT_CONFIGURED;
-        });
-
-        this.irrigationService.addLinkedService(tempService); // Link to main irrigation accesssory
-
-        postSetupDetails.push('Zone "' + zone.name + '" ' + (zone.enabled === false ? 'but disabled' : ''));
-      });
+        this.irrigationService.addLinkedService(service);
+        this.postSetupDetail('Zone "' + zone.name + '" ' + (zone.enabled === false ? 'but disabled' : ''));
+      }
     }
 
-    // Create flow/leak sensor if configured
-    if (this.deviceData?.sensorFlowPin !== undefined) {
-      this?.log?.debug('Setting up water flow sensor on GPIO pin "%s"', this.deviceData.sensorFlowPin);
-      // Initialise the GPIO output PINs for the flow sensor and setup a GPIO polling interrupt to count the pulses
-      this.#flowPulseCounter = 0; // Reset pulse counter
-      GPIO.open(this.deviceData.sensorFlowPin, GPIO.INPUT, GPIO.PULL_UP);
-      GPIO.poll(
-        this.deviceData.sensorFlowPin,
-        () => {
-          this.#flowPulseCounter++;
-        },
-        GPIO.POLL_HIGH,
-      );
-
-      // Setup interval to check the water flow every 1 second, which is 1Hz
-      this.#lastFlowTime = Date.now(); // Start of interval
-      this.#flowTimer = setInterval(() => {
-        // We've got the number of pulses over a set period of time, so calculate flow rate and volume used in this period
-
-        // Q (L/min) =  (F (Hz) / 1000) * factor (L/min)
-        // V (L) = Q (L/Min) * (duration (min) )
-        let intervalDuration = Date.now() - this.#lastFlowTime;
-        let flowRate = (this.#flowPulseCounter / (intervalDuration / 1000)) * this.deviceData.flowRate;
-        let flowVolume = flowRate * (intervalDuration / 60000);
-
-        // Determine if flow rate calculated is "within" bounds. We use this to filter out extremes and random responses
-        // <--- TODO
-
-        // Send out an event with current water flow data
-        if (this.#eventEmitter !== undefined) {
-          this.#eventEmitter.emit(Valve.FLOWEVENT, {
-            time: Date.now(),
-            rate: flowRate,
-            volume: flowVolume,
-          });
-        }
-
-        this.#lastFlowTime = Date.now(); // Update process time
-        this.#flowPulseCounter = 0; // Reset pulse counter
-      }, 1000);
-    }
-
-    // Add an optional water leak sensor if configured
-    this.leakSensorService = this.accessory.getService(this.hap.Service.LeakSensor);
+    // Optional leak sensor setup
     if (this.deviceData?.leakSensor === true && this.deviceData?.sensorFlowPin !== undefined) {
-      // Create the HomeKit service for the leak sensor
+      this.leakSensorService = this.accessory.getService(this.hap.Service.LeakSensor);
+
       if (this.leakSensorService === undefined) {
         this.leakSensorService = this.accessory.addService(this.hap.Service.LeakSensor, '', 1);
       }
+
       this.leakSensorService.updateCharacteristic(
         this.hap.Characteristic.LeakDetected,
         this.hap.Characteristic.LeakDetected.LEAK_NOT_DETECTED,
       );
-    }
-    if (this.leakSensorService !== undefined && (this.deviceData?.leakSensor !== true || this.deviceData?.sensorFlowPin === undefined)) {
-      // No longer required to have the leak sensor service
-      // This is to handle Homebridge cached restored accessories and if configuration options have changed
-      this?.log?.debug && this.log.debug('Configuration has changed to no-longer have leak sensor');
+    } else if (this.leakSensorService !== undefined) {
+      this.log?.debug?.('Configuration has changed to no-longer have leak sensor');
       this.accessory.removeService(this.leakSensorService);
       this.leakSensorService = undefined;
     }
 
-    // Setup timer to manage pausing and unpausing of watering
-    this.#pauseTimer = setInterval(() => {
-      if (this.deviceData.pauseTimeout !== 0 && Math.floor(Date.now() / 1000) >= this.deviceData.pauseTimeout) {
-        // Pause timeout expired, so turn system back on
-        this.setPower(true);
-        this?.log?.success && this.log.success('Watering has resumed after being paused for a period');
-      }
-    }, 5000); // Every 5 seconds. maybe every second??
+    // Register timers
+    this.addTimer('pauseCheck', { interval: 5000 }); // Resume watering after pause
+    this.addTimer('zoneCheck', { interval: 1000 }); // Centralised zone runtime handler
 
-    // Setup event listeners for various events we'll want to process
-    if (this.#eventEmitter !== undefined) {
-      this.#eventEmitter.addListener(WaterTank.WATERLEVEL, (waterLevelData) => {
-        this.messageServices(WaterTank.WATERLEVEL, waterLevelData);
-      });
-      this.#eventEmitter.addListener(Valve.VALVEEVENT, (valveData) => {
-        this.messageServices(Valve.VALVEEVENT, valveData);
-      });
-      this.#eventEmitter.addListener(Valve.FLOWEVENT, (flowData) => {
-        this.messageServices(Valve.FLOWEVENT, flowData);
-      });
-    }
-
-    // Setup linkage to EveHome app if configured todo so
-    if (
-      this.deviceData?.eveHistory === true &&
-      this.irrigationService !== undefined &&
-      typeof this.historyService?.linkToEveHome === 'function'
-    ) {
-      this.historyService.linkToEveHome(this.irrigationService, {
-        description: this.deviceData.description,
-        getcommand: this.#EveHomeGetCommand.bind(this),
-        setcommand: this.#EveHomeSetCommand.bind(this),
-      });
-    }
-
-    // Create extra details for output
-    this.switchService !== undefined && postSetupDetails.push('Virtual power switch');
-    this.deviceData?.sensorFlowPin !== undefined && postSetupDetails.push('Water flow sensor');
+    // Setup summary logging
+    this.switchService !== undefined && this.postSetupDetail('Virtual power switch');
+    this.deviceData?.sensorFlowPin !== undefined && this.postSetupDetail('Water flow sensor');
     this.leakSensorService !== undefined &&
-      postSetupDetails.push('Leak sensor' + (this.deviceData?.waterLeakAlert === true ? 'with alerting' : ''));
-
-    return postSetupDetails;
+      this.postSetupDetail('Leak sensor' + (this.deviceData?.waterLeakAlert === true ? ' with alerting' : ''));
   }
 
-  setPower(value) {
-    // Turns the irrigation system "virtually" on or off
-    this.irrigationService.updateCharacteristic(this.hap.Characteristic.InUse, this.hap.Characteristic.InUse.NOT_IN_USE); // Not in use until we start a valve??
+  async onTimer(message = {}) {
+    if (message?.timer === 'pauseCheck') {
+      if (this.deviceData.pauseTimeout !== 0 && Math.floor(Date.now() / 1000) >= this.deviceData.pauseTimeout) {
+        this.setPower(true);
+        this.log?.success?.('Watering has resumed after being paused for a period');
+      }
 
-    if (value === 'off' || value === 'OFF' || value === false || value === this.hap.Characteristic.Active.INACTIVE) {
-      // For any valves that are opened, finish them running gracefully
-      this.deviceData.zones.forEach((zone) => {
-        if (this.#zones?.[zone?.uuid]?.service !== undefined && this.#zones?.[zone?.uuid]?.timer !== undefined) {
-          this.setZoneActive(zone, this.hap.Characteristic.Active.INACTIVE);
-        }
-      });
-
-      this.irrigationService.updateCharacteristic(
-        this.hap.Characteristic.ProgramMode,
-        this.hap.Characteristic.ProgramMode.NO_PROGRAM_SCHEDULED,
-      );
-      this.irrigationService.updateCharacteristic(this.hap.Characteristic.Active, this.hap.Characteristic.Active.INACTIVE);
-
-      this.deviceData.power = false;
-    }
-
-    if (value === 'on' || value === 'ON' || value === true || value === this.hap.Characteristic.Active.ACTIVE) {
-      this.irrigationService.updateCharacteristic(
-        this.hap.Characteristic.ProgramMode,
-        this.hap.Characteristic.ProgramMode.PROGRAM_SCHEDULED_MANUAL_MODE,
-      );
-      this.irrigationService.updateCharacteristic(this.hap.Characteristic.Active, this.hap.Characteristic.Active.ACTIVE);
-
-      this.deviceData.power = true;
-    }
-
-    this.set({ power: this.deviceData.power });
-
-    this?.log?.info && this.log.info('Irrigation system was turned "%s"', this.deviceData.power === true ? 'on' : 'off');
-  }
-
-  setZoneName(zone, value) {
-    if (typeof zone !== 'object' || typeof value !== 'string' || value === '' || typeof this.#zones?.[zone?.uuid] !== 'object') {
       return;
     }
 
-    this?.log?.debug && this.log.debug('Setting irrigation zone name from "%s" to "%s"', zone.name, value);
+    if (message?.timer === 'zoneCheck') {
+      // Shared 1Hz zone runtime handler.
+      // Each active zone stores its own endTime and valve state; this timer only
+      // advances those zones and avoids creating one setInterval per zone run.
+      this.deviceData.zones.forEach((zone) => {
+        if (this.#zones?.[zone?.uuid]?.timer === true) {
+          this.#processZoneTimer(zone);
+        }
+      });
+    }
+  }
 
-    zone.name = value;
-    this.#zones[zone.uuid].service.updateCharacteristic(this.hap.Characteristic.ConfiguredName, value);
+  async onMessage(type, message = {}) {
+    if (type === WaterTank.WATERLEVEL_EVENT) {
+      this.#handleWaterLevelEvent(message);
+    }
 
-    // Save updated current configuration
+    if (type === Valve.FLOW_EVENT) {
+      this.#handleFlowEvent(message);
+    }
+
+    if (type === Valve.VALVE_EVENT) {
+      this.#handleValveEvent(message);
+    }
+
+    if (HomeKitDevice.EVEHOME !== undefined && type === HomeKitDevice.EVEHOME.GET && typeof message === 'object' && message !== null) {
+      // Pass back extra data for Eve Aqua onGet() to process command
+      // Data will already be an object, our only job is to add/modify it
+      message.flowrate = this.deviceData.flowRate;
+      message.programs = this.deviceData.programs.schedules;
+      message.enableschedule = this.deviceData.programs.enabled === true;
+      message.latitude = this.deviceData.latitude;
+      message.longitude = this.deviceData.longitude;
+      message.pause =
+        this.deviceData.pauseTimeout !== 0 ? Math.round((this.deviceData.pauseTimeout - Math.floor(Date.now() / 1000)) / 86400) : 0;
+
+      return message;
+    }
+
+    if (HomeKitDevice.EVEHOME !== undefined && type === HomeKitDevice.EVEHOME.SET && typeof message === 'object' && message !== null) {
+      if (message?.pause !== undefined) {
+        // EveHome suspension scene triggered from HomeKit
+        // 1 day = pause for today
+        // 2 day = pause for today and tomorrow
+        // get remaining seconds to midnight in our timezone (as date.now() is GMT time), then work out delay
+        this.deviceData.pauseTimeout = Math.floor(
+          Math.floor(Date.now() / 1000) +
+            ((8.64e7 - ((Date.now() - new Date().getTimezoneOffset() * 6e4) % 8.64e7)) / 6e4) * 60 +
+            (message.pause - 1) * 86400,
+        );
+
+        this?.log?.warn && this.log.warn('Watering has been paused for "%s"', message.pause === 1 ? 'today' : 'today and tomorrow');
+
+        if (this.irrigationService.getCharacteristic(this.hap.Characteristic.Active).value === true) {
+          this.setPower(false); // Turn off irrigation system
+        }
+      }
+
+      if (message?.flowrate !== undefined) {
+        // Updated flowrate from Eve Home app
+        this.deviceData.flowRate = message.flowrate;
+      }
+
+      if (message?.enabled !== undefined) {
+        // Schedules enabled or not
+        this.deviceData.programs.enabled = message.enabled === true;
+      }
+
+      if (message?.programs !== undefined) {
+        // Watering schedules
+        this.deviceData.programs.schedules = message.programs;
+      }
+
+      if (message?.latitude !== undefined) {
+        // Latitude information
+        this.deviceData.latitude = message.latitude;
+      }
+      if (message?.longitude !== undefined) {
+        // Longitude information
+        this.deviceData.longitude = message.longitude;
+      }
+
+      // Save any updated configurations
+      this.set({ pauseTimeout: this.deviceData.pauseTimeout });
+      this.set({
+        options: {
+          flowrate: this.deviceData.flowRate,
+          latitude: this.deviceData.latitude,
+          longitude: this.deviceData.longitude,
+        },
+      });
+      this.set({
+        programs: {
+          enabled: this.deviceData.programs.enabled,
+          schedules: this.deviceData.programs.schedules,
+        },
+      });
+    }
+  }
+
+  setPower(value) {
+    // Normalise incoming power state.
+    // Supports HomeKit Active enum, booleans, and legacy string values.
+    let power =
+      value === 'on' || value === 'ON' || value === true || value === this.hap.Characteristic.Active.ACTIVE
+        ? true
+        : value === 'off' || value === 'OFF' || value === false || value === this.hap.Characteristic.Active.INACTIVE
+          ? false
+          : undefined;
+
+    if (power === undefined) {
+      return;
+    }
+
+    // Turning the system off should gracefully stop any active zones first.
+    if (power === false && Array.isArray(this.deviceData?.zones) === true) {
+      this.deviceData.zones.forEach((zone) => {
+        if (this.#zones?.[zone?.uuid]?.timer === true) {
+          this.setZoneActive(zone, this.hap.Characteristic.Active.INACTIVE);
+        }
+      });
+    }
+
+    // Update internal state.
+    this.deviceData.power = power;
+
+    // Reflect system power state in HomeKit.
+    this.irrigationService.updateCharacteristic(
+      this.hap.Characteristic.Active,
+      power === true ? this.hap.Characteristic.Active.ACTIVE : this.hap.Characteristic.Active.INACTIVE,
+    );
+
+    this.irrigationService.updateCharacteristic(
+      this.hap.Characteristic.ProgramMode,
+      power === true
+        ? this.hap.Characteristic.ProgramMode.PROGRAM_SCHEDULED_MANUAL_MODE
+        : this.hap.Characteristic.ProgramMode.NO_PROGRAM_SCHEDULED,
+    );
+
+    this.irrigationService.updateCharacteristic(this.hap.Characteristic.InUse, this.hap.Characteristic.InUse.NOT_IN_USE);
+
+    // Keep optional virtual power switch in sync.
+    this.switchService?.updateCharacteristic?.(this.hap.Characteristic.On, power === true);
+
+    // Save updated current configuration.
+    this.set({ power: this.deviceData.power });
+
+    this?.log?.info?.('Irrigation system was turned "%s"', power === true ? 'on' : 'off');
+  }
+
+  setZoneName(zone, value) {
+    if (
+      typeof zone !== 'object' ||
+      typeof value !== 'string' ||
+      value.trim() === '' ||
+      typeof this.#zones?.[zone?.uuid]?.service !== 'object'
+    ) {
+      return;
+    }
+
+    // Normalise name (trim whitespace)
+    let name = value.trim();
+
+    this?.log?.debug?.('Setting irrigation zone name from "%s" to "%s"', zone.name, name);
+
+    // Persist internal name
+    zone.name = name;
+
+    // Reflect updated name in HomeKit
+    this.#zones[zone.uuid].service.updateCharacteristic(this.hap.Characteristic.ConfiguredName, name);
+
+    // Save updated configuration
     this.set({ zone: zone });
   }
 
@@ -408,44 +429,54 @@ export default class IrrigationSystem extends HomeKitDevice {
       return;
     }
 
+    // Normalise incoming value to a boolean for internal use
+    let enabled = value === true || value === this.hap.Characteristic.IsConfigured.CONFIGURED;
+
     this?.log?.debug &&
       this.log.debug(
         'Setting irrigation zone "%s" status from "%s" to "%s"',
         zone.name,
         zone.enabled === true ? 'Enabled' : 'Disabled',
-        value === this.hap.Characteristic.IsConfigured.CONFIGURED || value === true ? 'Enabled' : 'Disabled',
+        enabled === true ? 'Enabled' : 'Disabled',
       );
 
-    // If we're making the zone 'disabled' and if the zone is currently active, stop it first
-    if (value === this.hap.Characteristic.IsConfigured.NOT_CONFIGURED || value === false) {
-      if (this.#zones?.[zone?.uuid]?.service !== undefined && this.#zones?.[zone?.uuid]?.timer !== undefined) {
+    // If disabling a zone while it is currently active, stop it first
+    if (enabled === false) {
+      if (this.#zones?.[zone?.uuid]?.timer === true) {
         this.setZoneActive(zone, this.hap.Characteristic.Active.INACTIVE);
       }
     }
 
-    zone.enabled = value === this.hap.Characteristic.IsConfigured.CONFIGURED || value === true ? true : false;
+    // Persist internal enabled state
+    zone.enabled = enabled;
+
+    // Reflect the new state back into HomeKit
     this.#zones[zone.uuid].service.updateCharacteristic(
       this.hap.Characteristic.IsConfigured,
-      value === this.hap.Characteristic.IsConfigured.CONFIGURED || value === true
-        ? this.hap.Characteristic.IsConfigured.CONFIGURED
-        : this.hap.Characteristic.IsConfigured.NOT_CONFIGURED,
+      enabled === true ? this.hap.Characteristic.IsConfigured.CONFIGURED : this.hap.Characteristic.IsConfigured.NOT_CONFIGURED,
     );
 
-    // Save updated current configuration
+    // Persist updated configuration
     this.set({ zone: zone });
   }
 
   setZoneRuntime(zone, value) {
-    if (typeof zone !== 'object' || isNaN(value) === true || typeof this.#zones?.[zone?.uuid] !== 'object') {
+    if (typeof zone !== 'object' || Number.isFinite(Number(value)) !== true || typeof this.#zones?.[zone?.uuid] !== 'object') {
       return;
     }
 
-    this?.log?.debug && this.log.debug('Setting irrigation zone "%s", runtime from "%s" to "%s" seconds', zone.name, zone.runtime, value);
+    // Clamp runtime to configured maximum before storing or reflecting it.
+    let runtime = Math.min(Number(value), this.deviceData.maxRuntime);
 
-    zone.runtime = value;
-    this.#zones[zone.uuid].service.updateCharacteristic(this.hap.Characteristic.SetDuration, value);
+    this?.log?.debug?.('Setting irrigation zone "%s", runtime from "%s" to "%s" seconds', zone.name, zone.runtime, runtime);
 
-    // Save updated current configuration
+    // Persist internal runtime.
+    zone.runtime = runtime;
+
+    // Reflect updated runtime in HomeKit.
+    this.#zones[zone.uuid].service.updateCharacteristic(this.hap.Characteristic.SetDuration, runtime);
+
+    // Save updated current configuration.
     this.set({ zone: zone });
   }
 
@@ -461,228 +492,79 @@ export default class IrrigationSystem extends HomeKitDevice {
       return;
     }
 
+    let zoneData = this.#zones[zone.uuid];
+
     if (this.deviceData.power === true && (value === this.hap.Characteristic.Active.ACTIVE || value === true)) {
-      // Request to turn on sprinkler and the irrigation system is 'powered on'
-      // If there are any zones currently running, cancel them first
+      // Request to turn on sprinkler and the irrigation system is powered on.
+      // Only one zone is allowed to run at a time, so stop any currently active zone first.
       if (this.#numberRunningZones() !== 0) {
-        this.deviceData.zones.forEach((zone) => {
-          if (this.#zones?.[zone?.uuid]?.service !== undefined) {
-            if (
-              this.#zones[zone?.uuid].service.getCharacteristic(this.hap.Characteristic.Active).value ===
+        this.deviceData.zones.forEach((activeZone) => {
+          if (
+            this.#zones?.[activeZone?.uuid]?.service !== undefined &&
+            this.#zones[activeZone.uuid].service.getCharacteristic(this.hap.Characteristic.Active).value ===
               this.hap.Characteristic.Active.ACTIVE
-            ) {
-              this.setZoneActive(zone, this.hap.Characteristic.Active.INACTIVE);
-            }
+          ) {
+            this.setZoneActive(activeZone, this.hap.Characteristic.Active.INACTIVE);
           }
         });
       }
 
-      this.#zones[zone.uuid].totalwater = 0; // No water usage yet for the zone this time
-      this.#zones[zone.uuid].totalduration = 0; // No run duration for the water amount yet
+      // Reset runtime counters for this watering run.
+      zoneData.totalwater = 0;
+      zoneData.totalduration = 0;
 
-      if (Array.isArray(this.#zones[zone.uuid].valves) === true && this.#zones[zone.uuid].valves.length > 0) {
-        // Whether we have a "physical" or "virtual" zone, we'll open the first valve in the list
-        this.#zones[zone.uuid].valves[0].open();
+      // Whether this is a physical zone or a virtual zone with multiple relay pins,
+      // always start with the first valve in the list. The timer handler will move
+      // through the remaining valves as each slice of runtime expires.
+      if (Array.isArray(zoneData.valves) === true && zoneData.valves.length > 0) {
+        zoneData.valves[0].open();
       }
 
-      this.#zones[zone.uuid].service.updateCharacteristic(this.hap.Characteristic.Active, this.hap.Characteristic.Active.ACTIVE);
-      this.#zones[zone.uuid].service.updateCharacteristic(this.hap.Characteristic.InUse, this.hap.Characteristic.InUse.IN_USE);
-      this.#zones[zone.uuid].service.updateCharacteristic(
+      // Mark the zone active in HomeKit.
+      zoneData.service.updateCharacteristic(this.hap.Characteristic.Active, this.hap.Characteristic.Active.ACTIVE);
+      zoneData.service.updateCharacteristic(this.hap.Characteristic.InUse, this.hap.Characteristic.InUse.IN_USE);
+      zoneData.service.updateCharacteristic(
         this.hap.Characteristic.RemainingDuration,
-        this.#zones[zone.uuid].service.getCharacteristic(this.hap.Characteristic.SetDuration).value,
+        zoneData.service.getCharacteristic(this.hap.Characteristic.SetDuration).value,
       );
 
-      // Calculate the end time for the zone running, then sen
-      let endTime =
-        Math.floor(Date.now() / 1000) + this.#zones[zone.uuid].service.getCharacteristic(this.hap.Characteristic.SetDuration).value;
-      this.#zones[zone.uuid].timer = setInterval(() => {
-        if (Math.floor(Date.now() / 1000) < endTime) {
-          // Update HomeKit with remaining duration for zone
-          this.#zones[zone.uuid].service.updateCharacteristic(
-            this.hap.Characteristic.RemainingDuration,
-            endTime - Math.floor(Date.now() / 1000),
-          );
+      // Store timer state only.
+      // Actual ticking is handled by onTimer("zoneCheck") via #processZoneTimer().
+      zoneData.timer = true;
+      zoneData.endTime = Math.floor(Date.now() / 1000) + zoneData.service.getCharacteristic(this.hap.Characteristic.SetDuration).value;
 
-          this.#zones[zone.uuid].valves.forEach((valve, index) => {
-            if (valve.isOpen() === true) {
-              // Calculate the remaining time for this valve
-              let zoneEndTime =
-                endTime -
-                (this.#zones[zone.uuid].service.getCharacteristic(this.hap.Characteristic.SetDuration).value /
-                  this.#zones[zone.uuid].valves.length) *
-                  (this.#zones[zone.uuid].valves.length - index - 1);
-              if (Math.floor(Date.now() / 1000) >= zoneEndTime && index < this.#zones[zone.uuid].valves.length - 1) {
-                // Reached end of the time for this valve, so stop it and start the next in line
-                valve.close();
-                this.#zones[zone.uuid].valves[index + 1].open(); // Open the next valve in the list
-              }
-            }
-          });
-        }
-
-        if (Math.floor(Date.now() / 1000) > endTime) {
-          // Zone runtime has finished, so make zone inactive
-          // Call back into this function to turn off the zone, as it'll do all the valve closing etc
-          this.setZoneActive(zone, this.hap.Characteristic.Active.INACTIVE);
-        }
-      }, 1000);
+      return;
     }
 
     if (this.deviceData.power === false && (value === this.hap.Characteristic.Active.ACTIVE || value === true)) {
-      // Request to turn on sprinkler but the irrigation system is 'powered off'
-      // Work around is set state of the requested valve back to off after a short duration (500ms)
+      // Request to turn on sprinkler while irrigation system is powered off.
+      // HomeKit may briefly show the valve as active, so force it back inactive shortly after.
       setTimeout(() => {
-        clearInterval(this.#zones[zone.uuid].timer); // Cancel any zone running timer
-        this.#zones[zone.uuid].timer = undefined;
-        this.#zones[zone.uuid].service.updateCharacteristic(this.hap.Characteristic.Active, this.hap.Characteristic.Active.INACTIVE);
-        this.#zones[zone.uuid].service.updateCharacteristic(this.hap.Characteristic.InUse, this.hap.Characteristic.InUse.NOT_IN_USE);
-        this.#zones[zone.uuid].service.updateCharacteristic(this.hap.Characteristic.RemainingDuration, 0);
+        zoneData.timer = undefined;
+        zoneData.endTime = undefined;
+        zoneData.service.updateCharacteristic(this.hap.Characteristic.Active, this.hap.Characteristic.Active.INACTIVE);
+        zoneData.service.updateCharacteristic(this.hap.Characteristic.InUse, this.hap.Characteristic.InUse.NOT_IN_USE);
+        zoneData.service.updateCharacteristic(this.hap.Characteristic.RemainingDuration, 0);
       }, 500);
+
+      return;
     }
 
     if (this.deviceData.power === true && (value === this.hap.Characteristic.Active.INACTIVE || value === false)) {
-      // Request to turn off sprinkler and the irrigation system is 'powered on'
-      clearInterval(this.#zones[zone.uuid].timer); // Cancel any zone running timer
-      this.#zones[zone.uuid].timer = undefined;
-      this.#zones[zone.uuid].service.updateCharacteristic(this.hap.Characteristic.Active, this.hap.Characteristic.Active.INACTIVE);
-      this.#zones[zone.uuid].service.updateCharacteristic(this.hap.Characteristic.InUse, this.hap.Characteristic.InUse.NOT_IN_USE);
-      this.#zones[zone.uuid].service.updateCharacteristic(this.hap.Characteristic.RemainingDuration, 0);
+      // Request to turn off sprinkler and the irrigation system is powered on.
+      // Clear runtime state, reset HomeKit status, and close any open valves.
+      zoneData.timer = undefined;
+      zoneData.endTime = undefined;
+      zoneData.service.updateCharacteristic(this.hap.Characteristic.Active, this.hap.Characteristic.Active.INACTIVE);
+      zoneData.service.updateCharacteristic(this.hap.Characteristic.InUse, this.hap.Characteristic.InUse.NOT_IN_USE);
+      zoneData.service.updateCharacteristic(this.hap.Characteristic.RemainingDuration, 0);
 
-      // Work out which "valve(s)" associated with the zone are opened, and close them
-      this.#zones[zone.uuid].valves.forEach((valve) => {
+      // Work out which valve(s) associated with the zone are open and close them.
+      zoneData.valves.forEach((valve) => {
         if (valve.isOpen() === true) {
           valve.close();
         }
       });
-    }
-  }
-
-  messageServices(type, message) {
-    if (type === WaterTank.WATERLEVEL) {
-      // Water tank level event, so update total water percentage
-      // <---- TODO Need to "smooth" our readings to eliminate random reading
-      let totalPercentage = 0;
-      Object.values(this.#tanks).forEach((tank) => {
-        totalPercentage = totalPercentage + tank.percentage;
-      });
-      if (totalPercentage > 100) {
-        totalPercentage = 100;
-      }
-
-      this.irrigationService.updateCharacteristic(this.hap.Characteristic.WaterLevel, totalPercentage);
-
-      if (typeof this.historyService?.addHistory === 'function') {
-        this.historyService.addHistory(
-          this.hap.Characteristic.WaterLevel,
-          { time: Math.floor(Date.now() / 1000), level: totalPercentage },
-          600,
-        );
-      }
-    }
-
-    if (type === Valve.FLOWEVENT && message?.time !== undefined) {
-      // Water flow data, we can use this to determine if have a leaking system
-      this.flowData.push(message);
-      if (isNaN(this.flowData?.[0]?.time) === false && message.time - this.flowData[0].time > FLOWDATABUFFER) {
-        // Stored the maximum time period in our flow data buffer, so remove the first element
-        this.flowData.shift();
-      }
-
-      if (this.leakSensorService !== undefined) {
-        let nonZeroVolume = this.flowData.filter((flow) => flow.volume !== 0).length;
-        if (this.#numberRunningZones() === 0 && (nonZeroVolume / this.flowData.length) * 100 > 80) {
-          if (
-            this.lastValveClose === 0 ||
-            (this.lastValveClose !== 0 && Math.floor(Date.now() / 1000) - this.lastValveClose > WATERLEAKTIMEOUT)
-          ) {
-            // There are no valves opened and we're calculated that the flow data buffer for the period
-            // has logged over 80% water volume figures which are not zero
-            if (this.leakDetected === false) {
-              this.leakDetected = true; // Suspected water leak
-              if (typeof this.historyService?.addHistory === 'function') {
-                this.historyService.addHistory(this.leakSensorService, {
-                  time: Math.floor(Date.now() / 1000),
-                  status: 1,
-                }); // Leak detected
-              }
-
-              if (this.deviceData.waterLeakAlert === true) {
-                // Trigger HomeKit leak sensor if configured todo so
-                this.leakSensorService.updateCharacteristic(
-                  this.hap.Characteristic.LeakDetected,
-                  this.hap.Characteristic.LeakDetected.LEAK_DETECTED,
-                );
-              }
-
-              this?.log?.warn && this.log.warn('Detected suspected water leak on irrigation system');
-            }
-          }
-        }
-        if (this.#numberRunningZones() === 0 && nonZeroVolume === 0) {
-          // We've previously flagged a leak and it now looks like we're no longer reporting one, so clear the leak sensor status
-          if (this.leakDetected === true) {
-            this.leakDetected = false; // No longer detected water leak
-            if (typeof this.historyService?.addHistory === 'function') {
-              this.historyService.addHistory(this.leakSensorService, {
-                time: Math.floor(Date.now() / 1000),
-                status: 0,
-              }); // Leak not detected
-            }
-            this.leakSensorService.updateCharacteristic(
-              this.hap.Characteristic.LeakDetected,
-              this.hap.Characteristic.LeakDetected.LEAK_NOT_DETECTED,
-            );
-
-            this?.log?.success && this.log.success('Suspected water leak no longer detected on irrigation system');
-          }
-        }
-      }
-    }
-
-    if (type === Valve.VALVEEVENT && message?.uuid !== undefined) {
-      // Map our valve message uuid, back to a zone uuid
-      let associatedZone = undefined;
-      this.deviceData.zones.forEach((zone) => {
-        if (this.#zones[zone.uuid].valves.filter((valve) => valve?.uuid === message.uuid).length !== 0) {
-          associatedZone = zone;
-        }
-      });
-
-      if (message.status === Valve.Status.OPENED && this.#zones?.[associatedZone?.uuid] !== undefined) {
-        if (this.#zones[associatedZone.uuid].timer === undefined) {
-          if (typeof this.historyService?.addHistory === 'function') {
-            // Log zone opened to history service if present
-            this.historyService.addHistory(this.#zones[associatedZone.uuid].service, {
-              time: message.time,
-              status: 1,
-              water: 0,
-              duration: 0,
-            });
-          }
-
-          this?.log?.info && this.log.info('Zone "%s" was turned "on"', associatedZone.name);
-        }
-      }
-
-      if (message.status === Valve.Status.CLOSED && this.#zones?.[associatedZone?.uuid] !== undefined) {
-        this.lastValveClose = message.time;
-        this.#zones[associatedZone.uuid].totalwater = this.#zones[associatedZone.uuid].totalwater + message.water; // Add to running total for water usage
-        this.#zones[associatedZone.uuid].totalduration = this.#zones[associatedZone.uuid].totalduration + message.duration; // Add to running total for time
-        if (this.#zones[associatedZone.uuid].timer === undefined) {
-          // Since the zone doesn't not have an active runnign timer, we assume all valves associated with the zone have finished
-          if (typeof this.historyService?.addHistory === 'function') {
-            // Log zone closed to history service if present
-            this.historyService.addHistory(this.#zones[associatedZone.uuid].service, {
-              time: message.time,
-              status: 0,
-              water: this.#zones[associatedZone.uuid].totalwater,
-              duration: this.#zones[associatedZone.uuid].totalduration,
-            });
-          }
-
-          this?.log?.info && this.log.info('Zone "%s" was turned "off"', associatedZone.name);
-        }
-      }
     }
   }
 
@@ -760,120 +642,418 @@ export default class IrrigationSystem extends HomeKitDevice {
     }
   }
 
-  #EveHomeGetCommand(EveHomeGetData) {
-    // Pass back extra data for Eve Aqua onGet() to process command
-    // Data will already be an object, our only job is to add/modify it
-    EveHomeGetData.flowrate = this.deviceData.flowrate;
-    EveHomeGetData.programs = this.deviceData.programs.schedules;
-    EveHomeGetData.enableschedule = this.deviceData.programs.enabled === true;
-    EveHomeGetData.latitude = this.deviceData.latitude;
-    EveHomeGetData.longitude = this.deviceData.longitude;
-    EveHomeGetData.pause =
-      this.deviceData.pauseTimeout !== 0 ? Math.round((this.deviceData.pauseTimeout - Math.floor(Date.now() / 1000)) / 86400) : 0;
+  #processZoneTimer(zone) {
+    let zoneData = this.#zones?.[zone?.uuid];
 
-    return EveHomeGetData;
-  }
-
-  #EveHomeSetCommand(EveHomeSetData) {
-    if (typeof EveHomeSetData !== 'object') {
+    if (typeof zoneData !== 'object' || zoneData.timer !== true || Number.isFinite(Number(zoneData.endTime)) !== true) {
       return;
     }
 
-    if (EveHomeSetData?.pause !== undefined) {
-      // EveHome suspension scene triggered from HomeKit
-      // 1 day = pause for today
-      // 2 day = pause for today and tomorrow
-      // get remaining seconds to midnight in our timezone (as date.now() is GMT time), then work out delay
-      this.deviceData.pauseTimeout = Math.floor(
-        Math.floor(Date.now() / 1000) +
-          ((8.64e7 - ((Date.now() - new Date().getTimezoneOffset() * 6e4) % 8.64e7)) / 6e4) * 60 +
-          (EveHomeSetData.pause - 1) * 86400,
-      );
+    let now = Math.floor(Date.now() / 1000);
 
-      this?.log?.warn && this.log.warn('Watering has been paused for "%s"', EveHomeSetData.pause === 1 ? 'today' : 'today and tomorrow');
+    if (now < zoneData.endTime) {
+      // Update HomeKit remaining duration for this zone.
+      zoneData.service.updateCharacteristic(this.hap.Characteristic.RemainingDuration, zoneData.endTime - now);
 
-      if (this.irrigationService.getCharacteristic(this.hap.Characteristic.Active).value === true) {
-        this.setPower(false); // Turn off irrigation system
+      // Virtual zones may contain multiple valves. Split the configured runtime
+      // evenly across each valve and move to the next valve when its slice ends.
+      zoneData.valves.forEach((valve, index) => {
+        if (valve.isOpen() === true) {
+          let valveEndTime =
+            zoneData.endTime -
+            (zoneData.service.getCharacteristic(this.hap.Characteristic.SetDuration).value / zoneData.valves.length) *
+              (zoneData.valves.length - index - 1);
+
+          if (now >= valveEndTime && index < zoneData.valves.length - 1) {
+            valve.close();
+            zoneData.valves[index + 1].open();
+          }
+        }
+      });
+
+      return;
+    }
+
+    // Zone runtime has completed, so make zone inactive through the normal path.
+    this.setZoneActive(zone, this.hap.Characteristic.Active.INACTIVE);
+  }
+
+  #handleWaterLevelEvent(message = {}) {
+    if (
+      typeof message !== 'object' ||
+      message === null ||
+      typeof message?.uuid !== 'string' ||
+      typeof this.#tanks?.[message.uuid] !== 'object'
+    ) {
+      return;
+    }
+
+    // Water tank level event.
+    // WaterTank already smooths the reading before emitting this event, so store
+    // the latest reading from the message and then aggregate all known tank levels.
+    if (Number.isFinite(Number(message?.waterlevel)) === true) {
+      this.#tanks[message.uuid].waterlevel = Number(message.waterlevel);
+    }
+
+    if (Number.isFinite(Number(message?.percentage)) === true) {
+      this.#tanks[message.uuid].percentage = Number(message.percentage);
+    }
+
+    this.#tanks[message.uuid].lastUpdated = Date.now();
+
+    let totalPercentage = 0;
+
+    Object.values(this.#tanks).forEach((tank) => {
+      if (Number.isFinite(Number(tank?.percentage)) === true) {
+        totalPercentage = totalPercentage + Number(tank.percentage);
+      }
+    });
+
+    // HomeKit WaterLevel is a single percentage value, so clamp the combined level
+    // to 0-100 even when multiple tanks are configured.
+    totalPercentage = Math.max(0, Math.min(100, totalPercentage));
+
+    this.irrigationService.updateCharacteristic(this.hap.Characteristic.WaterLevel, totalPercentage);
+
+    // Log water level history against the WaterLevel characteristic type.
+    this.history(this.hap.Characteristic.WaterLevel, { time: Math.floor(Date.now() / 1000), level: totalPercentage }, 600);
+  }
+
+  #handleFlowEvent(message = {}) {
+    if (typeof message !== 'object' || message === null || Number.isFinite(Number(message?.time)) !== true) {
+      return;
+    }
+
+    // Water flow event.
+    // Store recent flow readings so we can detect sustained flow while no zones
+    // are running, which may indicate a leak.
+    this.flowData.push(message);
+
+    // Keep only the configured rolling flow window.
+    while (
+      this.flowData.length > 0 &&
+      Number.isFinite(Number(this.flowData[0]?.time)) === true &&
+      message.time - this.flowData[0].time > FLOW_DATA_BUFFER
+    ) {
+      this.flowData.shift();
+    }
+
+    if (this.leakSensorService !== undefined) {
+      let nonZeroVolume = this.flowData.filter(
+        (flow) => Number.isFinite(Number(flow?.volume)) === true && Number(flow.volume) !== 0,
+      ).length;
+      let nonZeroPercentage = this.flowData.length !== 0 ? (nonZeroVolume / this.flowData.length) * 100 : 0;
+      let noZonesRunning = this.#numberRunningZones() === 0;
+      let leakGraceExpired = this.lastValveClose === 0 || Math.floor(Date.now() / 1000) - this.lastValveClose > WATER_LEAK_TIMEOUT;
+
+      if (noZonesRunning === true && nonZeroPercentage > 80 && leakGraceExpired === true) {
+        // There are no valves open and the flow buffer contains sustained
+        // non-zero flow readings, so flag a suspected leak.
+        if (this.leakDetected === false) {
+          this.leakDetected = true;
+
+          this.history(this.leakSensorService, { time: Math.floor(Date.now() / 1000), status: 1 }); // Leak detected
+
+          if (this.deviceData.waterLeakAlert === true) {
+            // Trigger HomeKit leak sensor if configured to expose leak alerts.
+            this.leakSensorService.updateCharacteristic(
+              this.hap.Characteristic.LeakDetected,
+              this.hap.Characteristic.LeakDetected.LEAK_DETECTED,
+            );
+          }
+
+          this?.log?.warn?.('Detected suspected water leak on irrigation system');
+        }
+      }
+
+      if (noZonesRunning === true && nonZeroVolume === 0 && this.leakDetected === true) {
+        // Flow has returned to zero while no zones are running, so clear the leak state.
+        this.leakDetected = false;
+
+        this.history(this.leakSensorService, { time: Math.floor(Date.now() / 1000), status: 0 }); // Leak not detected
+
+        this.leakSensorService.updateCharacteristic(
+          this.hap.Characteristic.LeakDetected,
+          this.hap.Characteristic.LeakDetected.LEAK_NOT_DETECTED,
+        );
+
+        this?.log?.success?.('Suspected water leak no longer detected on irrigation system');
+      }
+    }
+  }
+
+  #handleValveEvent(message = {}) {
+    if (
+      typeof message !== 'object' ||
+      message === null ||
+      typeof message?.uuid !== 'string' ||
+      message.uuid === '' ||
+      Number.isFinite(Number(message?.time)) !== true ||
+      (message.status !== Valve.OPENED && message.status !== Valve.CLOSED)
+    ) {
+      return;
+    }
+
+    let associatedZone = undefined;
+
+    // Resolve which zone this valve belongs to
+    this.deviceData.zones.forEach((zone) => {
+      if (this.#zones?.[zone.uuid]?.valves?.some((valve) => valve?.uuid === message.uuid) === true) {
+        associatedZone = zone;
+      }
+    });
+
+    // If we couldn't map the valve → zone, ignore event
+    if (this.#zones?.[associatedZone?.uuid] === undefined) {
+      return;
+    }
+
+    let zoneData = this.#zones[associatedZone.uuid];
+
+    // Normalise optional numeric fields (protect totals from NaN)
+    let water = Number.isFinite(Number(message?.water)) === true ? Number(message.water) : 0;
+    let duration = Number.isFinite(Number(message?.duration)) === true ? Number(message.duration) : 0;
+
+    if (message.status === Valve.OPENED) {
+      // Only log "open" if this is not part of an active timed run
+      if (zoneData.timer === undefined) {
+        this.history(zoneData.service, {
+          time: message.time,
+          status: 1,
+          water: 0,
+          duration: 0,
+        });
+
+        this?.log?.info?.('Zone "%s" was turned "on"', associatedZone.name);
       }
     }
 
-    if (EveHomeSetData?.flowrate !== undefined) {
-      // Updated flowrate from Eve Home app
-      this.deviceData.flowrate = EveHomeSetData.flowrate;
-    }
+    if (message.status === Valve.CLOSED) {
+      // Track last valve close time (used for leak detection grace period)
+      this.lastValveClose = message.time;
 
-    if (EveHomeSetData?.enable !== undefined) {
-      // Schedules enabled or not
-      this.deviceData.programs.enabled = EveHomeSetData.enabled;
-    }
+      // Accumulate totals safely
+      zoneData.totalwater = zoneData.totalwater + water;
+      zoneData.totalduration = zoneData.totalduration + duration;
 
-    if (EveHomeSetData?.programs !== undefined) {
-      // Watering schedules
-      this.deviceData.programs.schedules = EveHomeSetData.programs;
-    }
+      // Only log "closed" if not part of an active timed run
+      if (zoneData.timer === undefined) {
+        this.history(zoneData.service, {
+          time: message.time,
+          status: 0,
+          water: zoneData.totalwater,
+          duration: zoneData.totalduration,
+        });
 
-    if (EveHomeSetData?.latitude !== undefined) {
-      // Latitude information
-      this.deviceData.latitude = EveHomeSetData.latitude;
+        this?.log?.info?.('Zone "%s" was turned "off"', associatedZone.name);
+      }
     }
-    if (EveHomeSetData?.longitude !== undefined) {
-      // Longitude information
-      this.deviceData.longitude = EveHomeSetData.longitude;
-    }
-
-    // Save any updated configurations
-    this.set({ pauseTimeout: this.deviceData.pauseTimeout });
-    this.set({
-      options: {
-        flowRate: this.deviceData.flowRate,
-        latitude: this.deviceData.latitude,
-        longitude: this.deviceData.longitude,
-      },
-    });
-    this.set({
-      programs: {
-        enabled: this.deviceData.programs.enabled,
-        schedules: this.deviceData.programs.schedules,
-      },
-    });
   }
+
+  // HTML dashboard rendering for use with HomeKitUI module.
+  // Gets called when the defined dashboard page is accessed in the HomeKitUI app,
+  // and returns project-specific HTML/CSS to render on the page.
+  getDashboard() {
+    let escapeHTML = (value) => {
+      return String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll('\'', '&#039;');
+    };
+
+    let css = `
+.irrigation-dashboard .dashboard-section {
+  max-width: 980px;
 }
 
-// General helper functions which don't need to be part of an object class
-function crc32(valueToHash) {
-  let crc32HashTable = [
-    0x000000000, 0x077073096, -0x11f19ed4, -0x66f6ae46, 0x0076dc419, 0x0706af48f, -0x169c5acb, -0x619b6a5d, 0x00edb8832, 0x079dcb8a4,
-    -0x1f2a16e2, -0x682d2678, 0x009b64c2b, 0x07eb17cbd, -0x1847d2f9, -0x6f40e26f, 0x01db71064, 0x06ab020f2, -0xc468eb8, -0x7b41be22,
-    0x01adad47d, 0x06ddde4eb, -0xb2b4aaf, -0x7c2c7a39, 0x0136c9856, 0x0646ba8c0, -0x29d0686, -0x759a3614, 0x014015c4f, 0x063066cd9,
-    -0x5f0c29d, -0x72f7f20b, 0x03b6e20c8, 0x04c69105e, -0x2a9fbe1c, -0x5d988e8e, 0x03c03e4d1, 0x04b04d447, -0x2df27a03, -0x5af54a95,
-    0x035b5a8fa, 0x042b2986c, -0x2444362a, -0x534306c0, 0x032d86ce3, 0x045df5c75, -0x2329f231, -0x542ec2a7, 0x026d930ac, 0x051de003a,
-    -0x3728ae80, -0x402f9eea, 0x021b4f4b5, 0x056b3c423, -0x30456a67, -0x47425af1, 0x02802b89e, 0x05f058808, -0x39f3264e, -0x4ef416dc,
-    0x02f6f7c87, 0x058684c11, -0x3e9ee255, -0x4999d2c3, 0x076dc4190, 0x001db7106, -0x672ddf44, -0x102aefd6, 0x071b18589, 0x006b6b51f,
-    -0x60401b5b, -0x17472bcd, 0x07807c9a2, 0x00f00f934, -0x69f65772, -0x1ef167e8, 0x07f6a0dbb, 0x0086d3d2d, -0x6e9b9369, -0x199ca3ff,
-    0x06b6b51f4, 0x01c6c6162, -0x7a9acf28, -0xd9dffb2, 0x06c0695ed, 0x01b01a57b, -0x7df70b3f, -0xaf03ba9, 0x065b0d9c6, 0x012b7e950,
-    -0x74414716, -0x3467784, 0x062dd1ddf, 0x015da2d49, -0x732c830d, -0x42bb39b, 0x04db26158, 0x03ab551ce, -0x5c43ff8c, -0x2b44cf1e,
-    0x04adfa541, 0x03dd895d7, -0x5b2e3b93, -0x2c290b05, 0x04369e96a, 0x0346ed9fc, -0x529877ba, -0x259f4730, 0x044042d73, 0x033031de5,
-    -0x55f5b3a1, -0x22f28337, 0x05005713c, 0x0270241aa, -0x41f4eff0, -0x36f3df7a, 0x05768b525, 0x0206f85b3, -0x46992bf7, -0x319e1b61,
-    0x05edef90e, 0x029d9c998, -0x4f2f67de, -0x3828574c, 0x059b33d17, 0x02eb40d81, -0x4842a3c5, -0x3f459353, -0x12477ce0, -0x65404c4a,
-    0x003b6e20c, 0x074b1d29a, -0x152ab8c7, -0x622d8851, 0x004db2615, 0x073dc1683, -0x1c9cf4ee, -0x6b9bc47c, 0x00d6d6a3e, 0x07a6a5aa8,
-    -0x1bf130f5, -0x6cf60063, 0x00a00ae27, 0x07d079eb1, -0xff06cbc, -0x78f75c2e, 0x01e01f268, 0x06906c2fe, -0x89da8a3, -0x7f9a9835,
-    0x0196c3671, 0x06e6b06e7, -0x12be48a, -0x762cd420, 0x010da7a5a, 0x067dd4acc, -0x6462091, -0x71411007, 0x017b7be43, 0x060b08ed5,
-    -0x29295c18, -0x5e2e6c82, 0x038d8c2c4, 0x04fdff252, -0x2e44980f, -0x5943a899, 0x03fb506dd, 0x048b2364b, -0x27f2d426, -0x50f5e4b4,
-    0x036034af6, 0x041047a60, -0x209f103d, -0x579820ab, 0x0316e8eef, 0x04669be79, -0x349e4c74, -0x43997ce6, 0x0256fd2a0, 0x05268e236,
-    -0x33f3886b, -0x44f4b8fd, 0x0220216b9, 0x05505262f, -0x3a45c442, -0x4d42f4d8, 0x02bb45a92, 0x05cb36a04, -0x3d280059, -0x4a2f30cf,
-    0x02cd99e8b, 0x05bdeae1d, -0x649b3d50, -0x139c0dda, 0x0756aa39c, 0x0026d930a, -0x63f6f957, -0x14f1c9c1, 0x072076785, 0x005005713,
-    -0x6a40b57e, -0x1d4785ec, 0x07bb12bae, 0x00cb61b38, -0x6d2d7165, -0x1a2a41f3, 0x07cdcefb7, 0x00bdbdf21, -0x792c2d2c, -0xe2b1dbe,
-    0x068ddb3f8, 0x01fda836e, -0x7e41e933, -0x946d9a5, 0x06fb077e1, 0x018b74777, -0x77f7a51a, -0xf09590, 0x066063bca, 0x011010b5c,
-    -0x709a6101, -0x79d5197, 0x0616bffd3, 0x0166ccf45, -0x5ff51d88, -0x28f22d12, 0x04e048354, 0x03903b3c2, -0x5898d99f, -0x2f9fe909,
-    0x04969474d, 0x03e6e77db, -0x512e95b6, -0x2629a524, 0x040df0b66, 0x037d83bf0, -0x564351ad, -0x2144613b, 0x047b2cf7f, 0x030b5ffe9,
-    -0x42420de4, -0x35453d76, 0x053b39330, 0x024b4a3a6, -0x452fc9fb, -0x3228f96d, 0x054de5729, 0x023d967bf, -0x4c9985d2, -0x3b9eb548,
-    0x05d681b02, 0x02a6f2b94, -0x4bf441c9, -0x3cf3715f, 0x05a05df1b, 0x02d02ef8d,
-  ];
-  let crc32 = 0xffffffff; // init crc32 hash;
-  valueToHash = Buffer.from(valueToHash); // convert value into buffer for processing
-  for (let index = 0; index < valueToHash.length; index++) {
-    crc32 = (crc32HashTable[(crc32 ^ valueToHash[index]) & 0xff] ^ (crc32 >>> 8)) & 0xffffffff;
+.irrigation-dashboard .dashboard-inner {
+  max-width: 980px;
+}
+
+.irrigation-dashboard .dashboard-card-header {
+  margin-bottom: 18px;
+}
+
+.irrigation-dashboard .dashboard-tank-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+}
+
+.irrigation-dashboard .dashboard-tank-card {
+  width: 300px;
+  max-width: 90%;
+  padding: 20px 18px;
+  text-align: center;
+  margin-right: auto;
+}
+
+.irrigation-dashboard .dashboard-tank-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+
+.irrigation-dashboard .dashboard-tank-name {
+  font-size: 18px;
+  font-weight: 600;
+  text-align: center;
+  margin-bottom: 12px;
+}
+
+.irrigation-dashboard .tank-graphic {
+  position: relative;
+  width: 90px;
+  height: 110px;
+  border: 2px solid #94a3b8;
+  border-radius: 50% / 14%;
+  overflow: hidden;
+  background: linear-gradient(180deg, #f8fafc 0%, #eef2f7 100%);
+  box-shadow: inset 0 0 12px rgba(0, 0, 0, 0.08);
+}
+
+.irrigation-dashboard .tank-graphic::before {
+  content: '';
+  position: absolute;
+  inset: -2px -2px auto -2px;
+  height: 28px;
+  border: 2px solid #94a3b8;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.55);
+  z-index: 3;
+}
+
+.irrigation-dashboard .tank-fill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(180deg, #60a5fa 0%, #1d4ed8 100%);
+  transition: height 0.4s ease;
+}
+
+.irrigation-dashboard .tank-fill.tank-empty {
+  opacity: 0.35;
+  background: linear-gradient(180deg, #93c5fd 0%, #60a5fa 100%);
+}
+
+.irrigation-dashboard .tank-fill::before {
+  content: '';
+  position: absolute;
+  left: -5%;
+  right: -5%;
+  top: -13px;
+  height: 26px;
+  border-radius: 50%;
+  background: rgba(147, 197, 253, 0.9);
+}
+
+.irrigation-dashboard .tank-shine {
+  position: absolute;
+  inset: 10px auto 12px 16px;
+  width: 22px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.42), rgba(255,255,255,0.04));
+  z-index: 4;
+}
+
+.irrigation-dashboard .dashboard-tank-stats {
+  text-align: center;
+}
+
+.irrigation-dashboard .dashboard-tank-percent {
+  color: #0f6fe8;
+  font-size: 28px;
+  font-weight: 700;
+}
+
+.irrigation-dashboard .dashboard-tank-litres {
+  margin-top: 6px;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.irrigation-dashboard .dashboard-tank-capacity,
+.irrigation-dashboard .dashboard-tank-empty-label,
+.irrigation-dashboard .dashboard-tank-updated {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.irrigation-dashboard .dashboard-tank-updated {
+  margin-top: 8px;
+  font-size: 13px;
+}
+
+.irrigation-dashboard .dashboard-tank-updated.stale {
+  color: #f59e0b;
+}
+`;
+
+    let html = '';
+
+    html += '<div class="irrigation-dashboard">';
+    html += '<section class="dashboard-section">';
+    html += '<div class="dashboard-inner">';
+
+    html += '<div class="dashboard-card-header">';
+    html += '<div>';
+    html += '<div class="card-title">Water Tanks</div>';
+    html += '<div class="list-sub">Current water levels in configured tanks</div>';
+    html += '</div>';
+    html += '</div>';
+
+    html += '<div class="dashboard-tank-grid">';
+
+    Object.values(this.deviceData?.tanks || []).forEach((tankConfig) => {
+      let tank = this.#tanks?.[tankConfig.uuid];
+
+      let percentage = Number.isFinite(Number(tank?.percentage)) === true ? Math.round(Number(tank.percentage)) : 0;
+      let fillHeight = percentage === 0 ? 4 : percentage;
+      let emptyClass = percentage === 0 ? ' tank-empty' : '';
+      let capacity = Number.isFinite(Number(tankConfig?.capacity)) === true ? Number(tankConfig.capacity) : 0;
+      let litres = Math.round((capacity * percentage) / 100);
+      let name = typeof tankConfig?.name === 'string' && tankConfig.name.trim() !== '' ? tankConfig.name.trim() : 'Water Tank';
+      let updated =
+        Number.isFinite(Number(tank?.lastUpdated)) === true
+          ? new Date(tank.lastUpdated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+          : undefined;
+      let stale = Number.isFinite(Number(tank?.lastUpdated)) === true && Date.now() - Number(tank.lastUpdated) > 300000;
+
+      html += '<section class="card dashboard-tank-card">';
+      html += '<div class="dashboard-tank-name">' + escapeHTML(name) + '</div>';
+      html += '<div class="dashboard-tank-body">';
+      html += '<div class="tank-graphic">';
+      html += '<div class="tank-fill' + emptyClass + '" style="height:' + fillHeight + '%"></div>';
+      html += '<div class="tank-shine"></div>';
+      html += '</div>';
+      html += '<div class="dashboard-tank-stats">';
+      html += '<div class="dashboard-tank-percent">' + percentage + '%</div>';
+      html += '<div class="dashboard-tank-litres">' + litres.toLocaleString() + ' L</div>';
+      html += '<div class="dashboard-tank-capacity">/ ' + capacity.toLocaleString() + ' L</div>';
+
+      if (percentage === 0) {
+        html += '<div class="dashboard-tank-empty-label">Empty</div>';
+      }
+
+      if (updated !== undefined) {
+        html += '<div class="dashboard-tank-updated' + (stale === true ? ' stale' : '') + '">Updated: ' + escapeHTML(updated) + '</div>';
+      }
+
+      html += '</div>';
+      html += '</div>';
+      html += '</section>';
+    });
+
+    html += '</div>'; // dashboard-tank-grid
+    html += '</div>'; // dashboard-inner
+    html += '</section>';
+    html += '</div>'; // irrigation-dashboard
+
+    return { type: 'html', html, css };
   }
-  crc32 ^= 0xffffffff;
-  return crc32 >>> 0; // return crc32
 }
