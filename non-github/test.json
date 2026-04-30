@@ -1,0 +1,105 @@
+{
+  "power": true,
+  "pauseTimeout": 0,
+  "serialNumber": "2166803755",
+  "hkUsername": "DD:D9:6B:CB:56:8B",
+  "tanks": [
+    {
+      "uuid": "ab31f426-db8c-419c-8d22-46e82cedcf88",
+      "name": "Rainwater Tank",
+      "enabled": true,
+      "capacity": 5000,
+      "sensorTrigPin": 20,
+      "sensorEchoPin": 21,
+      "sensorHeight": 1970,
+      "minimumLevel": 200
+    }
+  ],
+  "zones": [
+    {
+      "uuid": "167e6ba7-b3e2-4701-8f91-5d9de5dd217b",
+      "name": "Back Lawn",
+      "enabled": true,
+      "runtime": 1800,
+      "relayPin": 14
+    },
+    {
+      "uuid": "a6182178-0518-436c-9dd7-3c04b9586cb4",
+      "name": "Side Lawn",
+      "enabled": true,
+      "runtime": 1800,
+      "relayPin": 15
+    },
+    {
+      "uuid": "0c7e8c8e-7b24-453b-b374-b6e3e2956b36",
+      "name": "Front Lawn 1",
+      "enabled": true,
+      "runtime": 1200,
+      "relayPin": 18
+    },
+    {
+      "uuid": "462ae15e-87c0-42b4-9e5d-59259a0923d5",
+      "name": "Front Lawn 2",
+      "enabled": true,
+      "runtime": 1200,
+      "relayPin": 23
+    },
+    {
+      "uuid": "f3b32d76-8650-4857-bae4-76c87d2b6129",
+      "name": "Green Wall",
+      "enabled": true,
+      "runtime": 900,
+      "relayPin": 24
+    },
+    {
+      "uuid": "f4f6be81-e39c-4f90-a9dd-5f6d0ff1270d",
+      "name": "Front Yard",
+      "enabled": true,
+      "runtime": 1800,
+      "relayPin": 25
+    },
+    {
+      "uuid": "2d335b79-19ef-4638-8632-41728c8b6b79",
+      "name": "Veggie Garden",
+      "enabled": true,
+      "runtime": 3600,
+      "relayPin": 8
+    },
+    {
+      "uuid": "46aae3f5-3aa7-4071-9a5a-763e9e7fe37a",
+      "name": "Fruit Trees",
+      "enabled": true,
+      "runtime": 2400,
+      "relayPin": 7
+    },
+    {
+      "uuid": "c2b50b5d-2a24-4775-8983-9280cc51ecfa",
+      "name": "Front Lawn",
+      "enabled": true,
+      "runtime": 7200,
+      "relayPin": [
+        18,
+        23
+      ]
+    }
+  ],
+  "programs": {
+    "enabled": false,
+    "schedules": []
+  },
+  "options": {
+    "waterLeakAlert": false,
+    "sensorFlowPin": 17,
+    "flowRate": 0.964,
+    "maxRuntime": 7200,
+    "latitude": -35.2306175,
+    "longitude": 149.0875702,
+    "leakSensor": true,
+    "elevation": 600,
+    "eveHistory": true,
+    "powerSwitch": true,
+    "debug": true,
+    "hkPairingCode": "031-45-154",
+    "webUIPort": 8582
+  }
+}
