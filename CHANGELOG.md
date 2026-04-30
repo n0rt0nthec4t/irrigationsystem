@@ -2,6 +2,24 @@
 
 All notable changes to `irrigationsystem` will be documented in this file. This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.0.1-alpha.5 (2026/04/30)
+
+### Added
+- Added explicit zone start logging when runs are initiated via HomeKit (`setZoneActive`)
+- Added fallback safety cleanup when valves fail to emit close events during stop
+
+### Changed
+- Refined multi-valve sequencing logic to ensure seamless transitions (open next valve before closing previous)
+- Improved valve state synchronisation to prevent false run termination during relay switching
+- Updated zone timing logic to use consistent millisecond-based runtime calculations
+
+### Fixed
+- Fixed missing "zone turned on" log for timed runs (run now created before valve open event)
+- Fixed missing "zone turned off" log when final valve closes
+- Fixed valve close detection incorrectly ignoring final close event due to stale `isOpen()` state
+- Fixed negative duration calculation in valve runtime logging (mixed ms/seconds)
+- Fixed inconsistent timestamp handling between Valve and IrrigationSystem modules
+
 ## v0.0.1-alpha.4 (2026/04/30)
 
 ### Added

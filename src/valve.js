@@ -37,7 +37,7 @@
 // - Relay pins must be valid GPIO numbers within defined range
 // - Flow sensor pins must be valid GPIO numbers and configured with flow rate
 //
-// Code version 2026.04.29
+// Code version 2026.04.30
 // Mark Hulskamp
 'use strict';
 
@@ -162,7 +162,7 @@ export default class Valve {
     this?.log?.debug?.('Received request to open irrigation valve on relay pin "%s"', this.#valvePin);
     Valve.GPIO.write(this.#valvePin, Valve.GPIO.HIGH);
 
-    this.valveOpenedTime = Math.floor(Date.now() / 1000);
+    this.valveOpenedTime = Date.now();
     this.waterAmount = 0;
 
     // Send out an event with the updated valve status
@@ -192,7 +192,10 @@ export default class Valve {
       return;
     }
 
-    let duration = Math.floor(Date.now() / 1000) - this.valveOpenedTime;
+    let now = Date.now();
+
+    // duration in seconds
+    let duration = this.valveOpenedTime !== undefined ? Math.max(0, Math.floor((now - this.valveOpenedTime) / 1000)) : 0;
 
     // Emit event via HomeKitDevice
     if (this.#HomeKitDeviceUUID !== undefined) {
@@ -200,7 +203,7 @@ export default class Valve {
         uuid: this.uuid,
         pin: this.#valvePin,
         status: Valve.CLOSED,
-        time: Math.floor(Date.now() / 1000),
+        time: now,
         water: this.waterAmount,
         duration: duration,
       });
