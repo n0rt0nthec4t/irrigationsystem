@@ -4,6 +4,7 @@
     "zones": {
       "type": "array",
       "title": "Zones",
+      "restartRequired": false,
       "items": {
         "type": "object",
         "properties": {
@@ -40,6 +41,7 @@
     "tanks": {
       "type": "array",
       "title": "Water Tanks",
+      "restartRequired": false,
       "items": {
         "type": "object",
         "properties": {
@@ -86,10 +88,10 @@
         }
       }
     },
-
     "options": {
       "type": "object",
       "title": "Options",
+      "restartRequired": false,
       "properties": {
         "powerSwitch": {
           "type": "boolean",
@@ -103,7 +105,7 @@
         },
         "waterLeakAlert": {
           "type": "boolean",
-          "title": "Water Leaking Alerts",
+          "title": "HomeKit Water Leaking Alerts",
           "default": false
         },
         "sensorFlowPin": {
@@ -144,6 +146,31 @@
           "default": 0,
           "minimum": 0,
           "maximum": 8848
+        },
+        "debug": {
+          "type": "boolean",
+          "title": "Debug Logging",
+          "default": false
+        },
+        "eveHistory": {
+          "type": "boolean",
+          "title": "Eve History",
+          "default": true,
+          "restartRequired": true
+        },
+        "hkPairingCode": {
+          "type": "string",
+          "title": "HomeKit Pairing Code",
+          "default": "031-45-154",
+          "restartRequired": true
+        },
+        "webUIPort": {
+          "type": "integer",
+          "title": "Web UI Port",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 0,
+          "restartRequired": true
         }
       }
     }

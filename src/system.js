@@ -43,7 +43,6 @@
 // - Flow-based tracking is authoritative during timed runs
 // - Valve-reported totals only used for manual runs to avoid double counting
 //
-// Code version 2026/04/30
 // Mark Hulskamp
 'use strict';
 
@@ -57,22 +56,27 @@ import { setTimeout, clearTimeout } from 'node:timers';
 import HomeKitDevice from './HomeKitDevice.js';
 import WaterTank from './watertank.js';
 import Valve from './valve.js';
+import FlowSensor from './flowsensor.js';
 import { crc32 } from './utils.js';
 
-Valve.GPIO = GPIO; // Setup the GPIO library for the valve class
-
+// Define constants
 const WATER_LEAK_TIMEOUT = 10000; // Milliseconds after a water valve is closed before we can report on any water leak
-const FLOW_DATA_BUFFER = 30000; // Milliseconds of water flow data to store. Used to determine constant leak
+
+// Setup GPIO library for our device classes that require it
+// This allows the classes to use GPIO functions without needing to import or initialise the library themselves.
+// The library is initialised once in the main system class and then assigned to the static GPIO property of each class that needs it.
+Valve.GPIO = GPIO;
+FlowSensor.GPIO = GPIO;
+WaterTank.GPIO = GPIO;
 
 export default class IrrigationSystem extends HomeKitDevice {
   static TYPE = 'IrrigationSystem';
-  static VERSION = '2026.04.30';
+  static VERSION = '2026.05.04';
 
   irrigationService = undefined; // HomeKit service for this irrigation system
   leakSensorService = undefined; // HomeKit service for a "leak" sensor
   switchService = undefined;
   lastValveClose = 0; // Last time a valve was closed
-  flowData = []; // Water flow readings buffer
   activeCheck = [];
   activeCheckTimer = undefined;
   leakDetected = false; // No Water leak detected yet
@@ -80,6 +84,10 @@ export default class IrrigationSystem extends HomeKitDevice {
   // Internal data only for this class
   #tanks = {}; // Object for tanks we actually created
   #zones = {}; // Object for zones we actually created
+  #flowSensor = undefined; // Flow sensor instance
+  #lastFlowRate = 0; // Last water flow rate
+  #lastFlowTime = 0; // Last time water flowed
+  #unassignedWaterUsed = 0; // Track water
 
   constructor(accessory, api, log, deviceData) {
     super(accessory, api, log, deviceData);
@@ -120,168 +128,31 @@ export default class IrrigationSystem extends HomeKitDevice {
 
     // Optional virtual power switch (linked service)
     if (this.deviceData?.powerSwitch === true) {
-      this.switchService = this.addHKService(this.hap.Service.Switch, '', 1);
-      this.irrigationService.addLinkedService(this.switchService);
-
-      this.addHKCharacteristic(this.switchService, this.hap.Characteristic.On, {
-        onSet: (value) => {
-          if (value !== this.deviceData.power) {
-            this.setPower(value);
-          }
-        },
-        onGet: () => {
-          return this.deviceData.power === true;
-        },
-      });
-    } else {
-      // Remove switch if configuration no longer requires it
-      this.switchService = this.accessory.getService(this.hap.Service.Switch);
-      if (this.switchService !== undefined) {
-        this.accessory.removeService(this.switchService);
-      }
-      this.switchService = undefined;
+      this.#setupPowerSwitch(this.deviceData, true);
     }
 
     // Create water tanks (if configured)
-    if (Array.isArray(this.deviceData?.tanks) === true && this.deviceData.tanks.length > 0) {
-      this.log?.debug?.('Creating defined watertanks from configuration');
-
-      for (let tank of this.deviceData.tanks) {
-        if (tank?.enabled === true && tank?.sensorEchoPin !== undefined && tank?.sensorTrigPin !== undefined) {
-          // Ensure WaterLevel characteristic exists on irrigation service
-          if (this.irrigationService.testCharacteristic(this.hap.Characteristic.WaterLevel) === false) {
-            this.irrigationService.addCharacteristic(this.hap.Characteristic.WaterLevel);
-          }
-
-          this.#tanks[tank.uuid] = new WaterTank(this.log, this.uuid, tank);
-          this.postSetupDetail('Watertank "' + tank.name + '" with "' + tank.capacity + '" Litres');
-        }
-      }
-    }
+    this.#setupWaterTanks(this.deviceData, true);
+    Object.values(this.#tanks).forEach((tank) => {
+      this.postSetupDetail('Watertank "%s" with "%s" Litres', tank.config.name, tank.config.capacity);
+    });
 
     // Create irrigation zones
-    if (Array.isArray(this.deviceData?.zones) === true && this.deviceData.zones.length > 0) {
-      this.log?.debug?.('Creating defined irrigation zones from configuration');
+    this.#setupZones(this.deviceData, true);
+    Object.values(this.#zones).forEach((zone) => {
+      this.postSetupDetail('Zone "%s"', zone.config.name, zone.config.enabled === false ? '(disabled)' : '');
+    });
 
-      // Remove any stale valve services that no longer exist in configuration.
-      // This handles zones being removed or the zone count being reduced.
-      this.accessory.services
-        .filter((service) => service.UUID === this.hap.Service.Valve.UUID)
-        .forEach((service) => {
-          let subtype = Number(service.subtype);
-
-          if (Number.isFinite(subtype) === true && subtype > this.deviceData.zones.length) {
-            this.accessory.removeService(service);
-          }
-        });
-
-      this.#zones = {};
-
-      for (let [index, zone] of this.deviceData.zones.entries()) {
-        let service = this.addHKService(this.hap.Service.Valve, 'Valve ' + (index + 1), index + 1);
-
-        // Enable / disable zone
-        this.addHKCharacteristic(service, this.hap.Characteristic.IsConfigured, {
-          onSet: (value) => this.setZoneEnabled(zone, value),
-          onGet: () =>
-            zone.enabled === true ? this.hap.Characteristic.IsConfigured.CONFIGURED : this.hap.Characteristic.IsConfigured.NOT_CONFIGURED,
-        });
-
-        // Remaining duration (read-only, controlled by runtime)
-        this.addHKCharacteristic(service, this.hap.Characteristic.RemainingDuration, {
-          props: { maxValue: this.deviceData.maxRuntime },
-        });
-
-        // Set runtime duration
-        this.addHKCharacteristic(service, this.hap.Characteristic.SetDuration, {
-          onSet: (value) => this.setZoneRuntime(zone, value),
-          onGet: () => zone.runtime,
-          props: { maxValue: this.deviceData.maxRuntime },
-        });
-
-        // Zone name
-        this.addHKCharacteristic(service, this.hap.Characteristic.ConfiguredName, {
-          onSet: (value) => this.setZoneName(zone, value),
-          onGet: () => zone.name,
-        });
-
-        // Active state (start/stop zone)
-        this.addHKCharacteristic(service, this.hap.Characteristic.Active, {
-          onSet: (value) => this.#processActiveCharacteristic(zone, value, 'valve'),
-          onGet: () =>
-            this.#zones?.[zone.uuid]?.run !== undefined ? this.hap.Characteristic.Active.ACTIVE : this.hap.Characteristic.Active.INACTIVE,
-        });
-
-        // Identifier (stable ID for HomeKit)
-        this.addHKCharacteristic(service, this.hap.Characteristic.Identifier);
-
-        // Initial characteristic state
-        service.updateCharacteristic(this.hap.Characteristic.ValveType, this.hap.Characteristic.ValveType.IRRIGATION);
-        service.updateCharacteristic(this.hap.Characteristic.ConfiguredName, zone.name);
-        service.updateCharacteristic(
-          this.hap.Characteristic.IsConfigured,
-          zone.enabled === true ? this.hap.Characteristic.IsConfigured.CONFIGURED : this.hap.Characteristic.IsConfigured.NOT_CONFIGURED,
-        );
-        service.updateCharacteristic(this.hap.Characteristic.Active, this.hap.Characteristic.Active.INACTIVE);
-        service.updateCharacteristic(this.hap.Characteristic.InUse, this.hap.Characteristic.InUse.NOT_IN_USE);
-        service.updateCharacteristic(this.hap.Characteristic.RemainingDuration, 0);
-        service.updateCharacteristic(this.hap.Characteristic.SetDuration, zone.runtime);
-        service.updateCharacteristic(this.hap.Characteristic.Identifier, crc32(zone.uuid.toUpperCase()));
-
-        // Build valve(s) for this zone (supports multi-relay zones)
-        let relayArray = Array.isArray(zone.relayPin) === true ? zone.relayPin : [zone.relayPin];
-
-        let valveArray = relayArray
-          .filter((relayPin) => Number.isFinite(Number(relayPin)) === true)
-          .map(
-            (relayPin) =>
-              new Valve(this.log, this.uuid, {
-                uuid: zone.uuid + '-' + relayPin,
-                name: zone.name,
-                relayPin,
-                sensorFlowPin: this.deviceData?.sensorFlowPin,
-                flowRate: this.deviceData?.flowRate,
-              }),
-          );
-
-        // Store internal zone state
-        this.#zones[zone.uuid] = {
-          service,
-          valves: valveArray,
-
-          // Unified runtime state
-          // When undefined -> zone is idle
-          // When object -> zone is actively running (manual or timed)
-          run: undefined,
-
-          // Timer control (only used for timed runs)
-          endTime: undefined,
-
-          // Multi-valve sequencing support
-          activeValveIndex: 0,
-        };
-
-        this.irrigationService.addLinkedService(service);
-        this.postSetupDetail('Zone "' + zone.name + '" ' + (zone.enabled === false ? 'but disabled' : ''));
-      }
+    // Create flow sensor if configured.
+    // FlowSensor owns GPIO polling, flow calculation, and leak detection.
+    // IrrigationSystem only consumes FLOW_EVENT and LEAK_EVENT messages.
+    if (this.deviceData?.sensorFlowPin !== undefined) {
+      this.#setupFlowSensor(this.deviceData, true);
     }
 
-    // Optional leak sensor setup
-    if (this.deviceData?.leakSensor === true && this.deviceData?.sensorFlowPin !== undefined) {
-      this.leakSensorService = this.accessory.getService(this.hap.Service.LeakSensor);
-
-      if (this.leakSensorService === undefined) {
-        this.leakSensorService = this.accessory.addService(this.hap.Service.LeakSensor, '', 1);
-      }
-
-      this.leakSensorService.updateCharacteristic(
-        this.hap.Characteristic.LeakDetected,
-        this.hap.Characteristic.LeakDetected.LEAK_NOT_DETECTED,
-      );
-    } else if (this.leakSensorService !== undefined) {
-      this.log?.debug?.('Configuration has changed to no-longer have leak sensor');
-      this.accessory.removeService(this.leakSensorService);
-      this.leakSensorService = undefined;
+    // Setup optional HomeKit leak sensor
+    if (this.#flowSensor !== undefined && this.deviceData?.leakSensor === true) {
+      this.#setupLeakSensor(this.deviceData, true);
     }
 
     // Register timers
@@ -290,9 +161,30 @@ export default class IrrigationSystem extends HomeKitDevice {
 
     // Setup summary logging
     this.switchService !== undefined && this.postSetupDetail('Virtual power switch');
-    this.deviceData?.sensorFlowPin !== undefined && this.postSetupDetail('Water flow sensor');
+    this.#flowSensor !== undefined && this.postSetupDetail('Water flow sensor');
     this.leakSensorService !== undefined &&
-      this.postSetupDetail('Leak sensor' + (this.deviceData?.waterLeakAlert === true ? ' with alerting' : ''));
+      this.postSetupDetail('Leak sensor', this.deviceData?.waterLeakAlert === true ? 'with alerting' : 'with no alerting');
+  }
+
+  onUpdate(deviceData = {}) {
+    if (typeof deviceData !== 'object' || deviceData === null) {
+      return;
+    }
+
+    this.#setupPowerSwitch(deviceData);
+    this.#setupWaterTanks(deviceData);
+    this.#setupZones(deviceData);
+    this.#setupFlowSensor(deviceData);
+    this.#setupLeakSensor(deviceData);
+
+    // Updated changes to HomeKit water leak alerting
+    if (this.#flowSensor !== undefined && Object.hasOwn(deviceData, 'waterLeakAlert') === true) {
+      let waterLeakAlert = deviceData.waterLeakAlert === true;
+
+      if (this.leakSensorService !== undefined && waterLeakAlert !== this.deviceData.waterLeakAlert) {
+        this?.log?.info?.('Leak sensor', waterLeakAlert === true ? 'with alerting' : 'with no alerting');
+      }
+    }
   }
 
   async onTimer(message = {}) {
@@ -322,8 +214,12 @@ export default class IrrigationSystem extends HomeKitDevice {
       this.#handleWaterLevelEvent(message);
     }
 
-    if (type === Valve.FLOW_EVENT) {
+    if (type === FlowSensor.FLOW_EVENT) {
       this.#handleFlowEvent(message);
+    }
+
+    if (type === FlowSensor.LEAK_EVENT) {
+      this.#handleLeakEvent(message);
     }
 
     if (type === Valve.VALVE_EVENT) {
@@ -468,10 +364,20 @@ export default class IrrigationSystem extends HomeKitDevice {
     // Normalise name (trim whitespace)
     let name = value.trim();
 
+    // Nothing changed
+    if (name === zone.name) {
+      return;
+    }
+
     this?.log?.debug?.('Setting irrigation zone name from "%s" to "%s"', zone.name, name);
 
     // Persist internal name
     zone.name = name;
+
+    // Keep stored zone config in sync
+    if (this.#zones?.[zone.uuid]?.config !== undefined) {
+      this.#zones[zone.uuid].config.name = name;
+    }
 
     // Reflect updated name in HomeKit
     this.#zones[zone.uuid].service.updateCharacteristic(this.hap.Characteristic.ConfiguredName, name);
@@ -598,6 +504,9 @@ export default class IrrigationSystem extends HomeKitDevice {
         waterUsed: 0,
         type: 'timed',
       };
+
+      // Flow is now expected, so suppress leak detection while watering.
+      this.#flowSensor?.markExpectedFlow?.(true);
 
       this.history(zoneData.service, {
         time: Math.floor(zoneData.run.startTime / 1000),
@@ -864,112 +773,81 @@ export default class IrrigationSystem extends HomeKitDevice {
       return;
     }
 
-    // Water flow event.
-    // Store recent flow readings so we can detect sustained flow while no zones
-    // are running, which may indicate a leak.
-    let now = Date.now();
-    let eventTime = Number(message.time);
+    // Store latest system-wide flow so the dashboard can show flow even when
+    // no zone is active, such as during leak detection/manual valve opening.
+    let flowRate = Number.isFinite(Number(message?.rate)) === true ? Number(message.rate) : 0;
+    let flowVolume = Number.isFinite(Number(message?.volume)) === true ? Number(message.volume) : 0;
+    let activeRun = false;
+    let isLeakGracePeriod =
+      Number.isFinite(Number(this.lastValveClose)) === true &&
+      this.lastValveClose > 0 &&
+      Date.now() - Number(this.lastValveClose) <= WATER_LEAK_TIMEOUT;
 
-    this.flowData.push({
-      ...message,
-      time: eventTime,
-    });
+    this.#lastFlowRate = flowRate;
+    this.#lastFlowTime = Number(message.time);
 
-    // Keep only the configured rolling flow window (milliseconds)
-    while (
-      this.flowData.length > 0 &&
-      Number.isFinite(Number(this.flowData[0]?.time)) === true &&
-      eventTime - Number(this.flowData[0].time) > FLOW_DATA_BUFFER
-    ) {
-      this.flowData.shift();
-    }
-
-    // Track live flow against ACTIVE runs (single source of truth)
+    // Track live flow against ACTIVE runs.
     Object.values(this.#zones || {}).forEach((zone) => {
       if (zone?.run !== undefined) {
-        zone.run.flowRate = Number.isFinite(Number(message?.rate)) === true ? Number(message.rate) : 0;
-
-        if (Number.isFinite(Number(message?.volume)) === true) {
-          zone.run.waterUsed = zone.run.waterUsed + Number(message.volume);
-        }
+        activeRun = true;
+        zone.run.flowRate = flowRate;
+        zone.run.waterUsed = zone.run.waterUsed + flowVolume;
       }
     });
 
-    if (this.leakSensorService !== undefined) {
-      let noZonesRunning = Object.values(this.#zones || {}).every((zone) => zone?.run === undefined);
+    // Track flow that is not assigned to a zone.
+    // This covers leak/manual valve flow while no zone is running.
+    // Do not count residual flow immediately after a normal zone closes.
+    if (activeRun === false && isLeakGracePeriod === false && flowRate > 0 && flowVolume > 0) {
+      this.#unassignedWaterUsed = this.#unassignedWaterUsed + flowVolume;
+    }
 
-      // Pressure-decay aware grace handling
-      let decayWindow = this.flowData.filter((flow) => {
-        return this.lastValveClose === 0 || Number(flow.time) > this.lastValveClose;
-      });
+    // Reset stale unassigned usage after flow has stopped.
+    if (activeRun === false && flowRate === 0) {
+      this.#unassignedWaterUsed = 0;
+    }
+  }
 
-      let recentSamples = decayWindow.slice(-3);
+  #handleLeakEvent(message = {}) {
+    if (
+      typeof message !== 'object' ||
+      message === null ||
+      Number.isFinite(Number(message?.time)) !== true ||
+      (message.status !== 0 && message.status !== 1)
+    ) {
+      return;
+    }
 
-      let flowSettled =
-        recentSamples.length >= 3 &&
-        recentSamples.every((flow) => {
-          return Number.isFinite(Number(flow?.rate)) !== true || Number(flow.rate) < 0.05;
-        });
+    if (this.leakSensorService === undefined) {
+      return;
+    }
 
-      let leakGraceExpired = this.lastValveClose === 0 || (now - this.lastValveClose > WATER_LEAK_TIMEOUT && flowSettled === true);
+    if (message.status === 1 && this.leakDetected === false) {
+      this.leakDetected = true;
 
-      let leakFlowData = this.flowData.filter((flow) => {
-        return this.lastValveClose === 0 || Number(flow.time) > this.lastValveClose + WATER_LEAK_TIMEOUT;
-      });
+      this.history(this.leakSensorService, { time: Math.floor(Number(message.time) / 1000), status: 1 });
 
-      let leakSamples = leakFlowData.filter((flow) => {
-        return Number.isFinite(Number(flow?.volume)) === true && Number(flow.volume) > 0;
-      }).length;
-
-      let leakVolume = leakFlowData.reduce((total, flow) => {
-        return total + (Number.isFinite(Number(flow?.volume)) === true ? Number(flow.volume) : 0);
-      }, 0);
-
-      let averageFlowRate =
-        leakFlowData.length !== 0
-          ? leakFlowData.reduce((total, flow) => {
-            return total + (Number.isFinite(Number(flow?.rate)) === true ? Number(flow.rate) : 0);
-          }, 0) / leakFlowData.length
-          : 0;
-
-      let leakPercentage = leakFlowData.length !== 0 ? (leakSamples / leakFlowData.length) * 100 : 0;
-
-      if (
-        noZonesRunning === true &&
-        leakGraceExpired === true &&
-        leakFlowData.length > 3 &&
-        leakPercentage > 60 &&
-        leakVolume > 0 &&
-        averageFlowRate > 0.2
-      ) {
-        if (this.leakDetected === false) {
-          this.leakDetected = true;
-
-          this.history(this.leakSensorService, { time: Math.floor(now / 1000), status: 1 });
-
-          if (this.deviceData.waterLeakAlert === true) {
-            this.leakSensorService.updateCharacteristic(
-              this.hap.Characteristic.LeakDetected,
-              this.hap.Characteristic.LeakDetected.LEAK_DETECTED,
-            );
-          }
-
-          this?.log?.warn?.('Detected suspected water leak on irrigation system');
-        }
-      }
-
-      if (noZonesRunning === true && leakFlowData.length > 3 && leakVolume === 0 && this.leakDetected === true) {
-        this.leakDetected = false;
-
-        this.history(this.leakSensorService, { time: Math.floor(now / 1000), status: 0 });
-
+      if (this.deviceData.waterLeakAlert === true) {
         this.leakSensorService.updateCharacteristic(
           this.hap.Characteristic.LeakDetected,
-          this.hap.Characteristic.LeakDetected.LEAK_NOT_DETECTED,
+          this.hap.Characteristic.LeakDetected.LEAK_DETECTED,
         );
-
-        this?.log?.success?.('Suspected water leak no longer detected on irrigation system');
       }
+
+      this?.log?.warn?.('Detected suspected water leak on irrigation system');
+    }
+
+    if (message.status === 0 && this.leakDetected === true) {
+      this.leakDetected = false;
+
+      this.history(this.leakSensorService, { time: Math.floor(Number(message.time) / 1000), status: 0 });
+
+      this.leakSensorService.updateCharacteristic(
+        this.hap.Characteristic.LeakDetected,
+        this.hap.Characteristic.LeakDetected.LEAK_NOT_DETECTED,
+      );
+
+      this?.log?.success?.('Suspected water leak no longer detected on irrigation system');
     }
   }
 
@@ -1054,6 +932,15 @@ export default class IrrigationSystem extends HomeKitDevice {
       let totalDuration = Math.max(0, Number(message.time) - Number(zoneData.run.startTime)) / 1000;
       let totalWater = zoneData.run.waterUsed;
 
+      // Format duration (mm:ss)
+      let minutes = Math.floor(totalDuration / 60);
+      let seconds = Math.floor(totalDuration % 60);
+      let durationText = minutes + 'm ' + seconds + 's';
+
+      // Format water (litres)
+      let waterText =
+        Number.isFinite(Number(totalWater)) === true && totalWater > 0 ? Math.round(totalWater).toLocaleString() + 'L' : undefined;
+
       this.history(zoneData.service, {
         time: Math.floor(message.time / 1000),
         status: 0,
@@ -1061,7 +948,16 @@ export default class IrrigationSystem extends HomeKitDevice {
         duration: totalDuration,
       });
 
-      this?.log?.info?.('Zone "%s" was turned "off"', associatedZone.name);
+      // Enhanced logging
+      this?.log?.info?.(
+        waterText !== undefined ? 'Zone "%s" was turned "off" after %s using %s' : 'Zone "%s" was turned "off" after %s',
+        associatedZone.name,
+        durationText,
+        ...(waterText !== undefined ? [waterText] : []),
+      );
+
+      // Flow is no longer expected, so start leak detection grace window.
+      this.#flowSensor?.markExpectedFlow?.(false);
 
       zoneData.run = undefined;
       zoneData.endTime = undefined;
@@ -1070,6 +966,391 @@ export default class IrrigationSystem extends HomeKitDevice {
       zoneData.service.updateCharacteristic(this.hap.Characteristic.Active, this.hap.Characteristic.Active.INACTIVE);
       zoneData.service.updateCharacteristic(this.hap.Characteristic.InUse, this.hap.Characteristic.InUse.NOT_IN_USE);
       zoneData.service.updateCharacteristic(this.hap.Characteristic.RemainingDuration, 0);
+    }
+  }
+
+  #setupPowerSwitch(deviceData = {}, atStart = false) {
+    if (deviceData?.powerSwitch === true) {
+      if (this.switchService === undefined) {
+        this.switchService = this.addHKService(this.hap.Service.Switch, '', 1);
+
+        // HomeKit service name.
+        this.addHKCharacteristic(this.switchService, this.hap.Characteristic.Name);
+        this.switchService.updateCharacteristic(this.hap.Characteristic.Name, '');
+
+        this.addHKCharacteristic(this.switchService, this.hap.Characteristic.On, {
+          onSet: (value) => {
+            if (value !== this.deviceData.power) {
+              this.setPower(value);
+            }
+          },
+          onGet: () => {
+            return this.deviceData.power === true;
+          },
+        });
+
+        if (atStart === false) {
+          this?.log?.info?.('Virtual power switch has been added');
+        }
+      }
+
+      // Always keep state in sync.
+      this.switchService.updateCharacteristic(this.hap.Characteristic.On, this.deviceData.power === true);
+
+      return;
+    }
+
+    // Remove if no longer configured.
+    if (this.switchService !== undefined) {
+      this.accessory.removeService(this.switchService);
+      this.switchService = undefined;
+
+      if (atStart === false) {
+        this?.log?.info?.('Virtual power switch has been removed');
+      }
+    }
+  }
+
+  #setupWaterTanks(deviceData = {}) {
+    if (Array.isArray(deviceData?.tanks) !== true) {
+      deviceData.tanks = [];
+    }
+
+    let activeTanks = deviceData.tanks.filter((tank) => {
+      return (
+        typeof tank === 'object' &&
+        tank !== null &&
+        tank.enabled === true &&
+        tank.sensorEchoPin !== undefined &&
+        tank.sensorTrigPin !== undefined &&
+        typeof tank.uuid === 'string' &&
+        tank.uuid !== ''
+      );
+    });
+
+    let activeUUIDs = activeTanks.map((tank) => tank.uuid);
+
+    // Remove tanks no longer configured, disabled, or no longer valid
+    Object.keys(this.#tanks || {}).forEach((uuid) => {
+      if (activeUUIDs.includes(uuid) === false) {
+        this.#tanks[uuid]?.instance?.onShutdown?.();
+
+        this?.log?.debug?.('Watertank "%s" has been removed', this.#tanks[uuid]?.config?.name ?? uuid);
+
+        delete this.#tanks[uuid];
+      }
+    });
+
+    // Add / update active tanks
+    activeTanks.forEach((tank) => {
+      this.addHKCharacteristic(this.irrigationService, this.hap.Characteristic.WaterLevel);
+
+      if (this.#tanks?.[tank.uuid] === undefined) {
+        this.#tanks[tank.uuid] = {
+          instance: new WaterTank(this.log, this.uuid, {
+            ...tank,
+            usonicBinary: this.deviceData?.usonicBinary,
+          }),
+          config: tank,
+          waterlevel: undefined,
+          percentage: undefined,
+          lastUpdated: undefined,
+        };
+
+        this?.log?.debug?.(
+          'Setting up watertank "%s" using trigger pin "%s" and echo pin "%s"',
+          tank.name,
+          tank.sensorTrigPin,
+          tank.sensorEchoPin,
+        );
+        return;
+      }
+
+      let existing = this.#tanks[tank.uuid];
+
+      if (JSON.stringify(existing.config) !== JSON.stringify(tank)) {
+        this?.log?.debug?.('Updating watertank "%s"', tank.name);
+
+        existing.instance?.onUpdate?.(tank);
+        existing.config = tank;
+      }
+    });
+
+    if (Object.keys(this.#tanks).length === 0) {
+      if (this.irrigationService.testCharacteristic(this.hap.Characteristic.WaterLevel) === true) {
+        this.irrigationService.removeCharacteristic(this.hap.Characteristic.WaterLevel);
+      }
+    }
+  }
+
+  #setupZones(deviceData = {}, atStart = false) {
+    if (Array.isArray(deviceData?.zones) !== true) {
+      deviceData.zones = [];
+    }
+
+    // HomeKit grouping support.
+    // Required when multiple Valve services exist on the same accessory.
+    if (deviceData.zones.length > 1) {
+      this.serviceLabelService = this.accessory.getService(this.hap.Service.ServiceLabel);
+
+      if (this.serviceLabelService === undefined) {
+        this.serviceLabelService = this.accessory.addService(this.hap.Service.ServiceLabel, '', 1);
+      }
+
+      this.serviceLabelService.updateCharacteristic(
+        this.hap.Characteristic.ServiceLabelNamespace,
+        this.hap.Characteristic.ServiceLabelNamespace.ARABIC_NUMERALS,
+      );
+    }
+
+    // Remove stale HomeKit valve services no longer present in configuration.
+    this.accessory.services
+      .filter((service) => service.UUID === this.hap.Service.Valve.UUID)
+      .forEach((service) => {
+        let exists = deviceData.zones.some((zone) => {
+          if (typeof zone?.uuid !== 'string' || zone.uuid === '') {
+            return false;
+          }
+
+          return Number(service.subtype) === crc32(zone.uuid.toUpperCase());
+        });
+
+        if (exists === false) {
+          this.accessory.removeService(service);
+        }
+      });
+
+    // Remove internal zones no longer configured.
+    Object.keys(this.#zones || {}).forEach((uuid) => {
+      let exists = deviceData.zones.some((zone) => zone?.uuid === uuid);
+
+      if (exists === false) {
+        if (this.#zones[uuid]?.run !== undefined) {
+          this.#zones[uuid].endTime = undefined;
+        }
+
+        this.#zones[uuid]?.valves?.forEach((valve) => {
+          if (valve.isOpen() === true) {
+            valve.close();
+          }
+        });
+
+        if (atStart === false) {
+          this?.log?.info?.('Zone "%s" has been removed', this.#zones[uuid]?.config?.name ?? uuid);
+        }
+
+        delete this.#zones[uuid];
+      }
+    });
+
+    // Create / update configured zones.
+    deviceData.zones.forEach((zone, index) => {
+      if (typeof zone !== 'object' || zone === null || typeof zone.uuid !== 'string' || zone.uuid === '') {
+        return;
+      }
+
+      let uuidHash = crc32(zone.uuid.toUpperCase());
+      let service = this.addHKService(this.hap.Service.Valve, zone.name, uuidHash);
+
+      // Create new internal zone state if needed.
+      if (this.#zones?.[zone.uuid] === undefined) {
+        // HomeKit service name.
+        this.addHKCharacteristic(service, this.hap.Characteristic.Name);
+        service.updateCharacteristic(this.hap.Characteristic.Name, zone.name);
+
+        // Enable / disable zone.
+        this.addHKCharacteristic(service, this.hap.Characteristic.IsConfigured, {
+          onSet: (value) => this.setZoneEnabled(zone, value),
+          onGet: () =>
+            zone.enabled === true ? this.hap.Characteristic.IsConfigured.CONFIGURED : this.hap.Characteristic.IsConfigured.NOT_CONFIGURED,
+        });
+
+        // Remaining duration.
+        this.addHKCharacteristic(service, this.hap.Characteristic.RemainingDuration, {
+          props: { maxValue: this.deviceData.maxRuntime },
+        });
+
+        // Runtime.
+        this.addHKCharacteristic(service, this.hap.Characteristic.SetDuration, {
+          onSet: (value) => this.setZoneRuntime(zone, value),
+          onGet: () => zone.runtime,
+          props: { maxValue: this.deviceData.maxRuntime },
+        });
+
+        // Zone name.
+        this.addHKCharacteristic(service, this.hap.Characteristic.ConfiguredName, {
+          onSet: (value) => this.setZoneName(zone, value),
+          onGet: () => zone.name,
+        });
+
+        // Active state.
+        this.addHKCharacteristic(service, this.hap.Characteristic.Active, {
+          onSet: (value) => this.#processActiveCharacteristic(zone, value, 'valve'),
+          onGet: () =>
+            this.#zones?.[zone.uuid]?.run !== undefined ? this.hap.Characteristic.Active.ACTIVE : this.hap.Characteristic.Active.INACTIVE,
+        });
+
+        // Identifier is stable for the lifetime of this HomeKit service.
+        // Set once only when the service is first created.
+        this.addHKCharacteristic(service, this.hap.Characteristic.Identifier);
+        service.updateCharacteristic(this.hap.Characteristic.Identifier, uuidHash);
+
+        // ServiceLabelIndex is stable for the lifetime of this HomeKit service.
+        // Set once only when the service is first created.
+        this.addHKCharacteristic(service, this.hap.Characteristic.ServiceLabelIndex, {
+          onGet: () => index + 1,
+        });
+        service.updateCharacteristic(this.hap.Characteristic.ServiceLabelIndex, index + 1);
+
+        this.#zones[zone.uuid] = {
+          service,
+          valves: [],
+          config: undefined,
+
+          // Unified runtime state.
+          // When undefined -> zone is idle.
+          // When object -> zone is actively running.
+          run: undefined,
+
+          // Timer control.
+          endTime: undefined,
+
+          // Multi-valve sequencing support.
+          activeValveIndex: 0,
+        };
+
+        this.irrigationService.addLinkedService(service);
+
+        if (atStart === false) {
+          this?.log?.info?.('Zone "%s" has been added', zone.name);
+        }
+      }
+
+      let zoneData = this.#zones[zone.uuid];
+
+      // Relay layout changes require rebuilding the valve objects.
+      if (JSON.stringify(zoneData.config?.relayPin) !== JSON.stringify(zone.relayPin)) {
+        if (zoneData.run !== undefined) {
+          this.setZoneActive(zoneData.config, this.hap.Characteristic.Active.INACTIVE);
+        }
+
+        zoneData.valves.forEach((valve) => {
+          if (valve.isOpen() === true) {
+            valve.close();
+          }
+        });
+
+        let relayArray = Array.isArray(zone.relayPin) === true ? zone.relayPin : [zone.relayPin];
+
+        zoneData.valves = relayArray
+          .filter((relayPin) => Number.isFinite(Number(relayPin)) === true)
+          .map(
+            (relayPin) =>
+              new Valve(this.log, this.uuid, {
+                uuid: zone.uuid + '-' + relayPin,
+                name: zone.name,
+                relayPin,
+              }),
+          );
+      }
+
+      // Update stored config snapshot for later change detection.
+      zoneData.config = structuredClone(zone);
+
+      // Keep service display name and HomeKit name in sync.
+      if (zoneData.service.displayName !== zone.name) {
+        zoneData.service.displayName = zone.name;
+      }
+
+      // Update HomeKit state that can legitimately change.
+      zoneData.service.updateCharacteristic(this.hap.Characteristic.Name, zone.name);
+      zoneData.service.updateCharacteristic(this.hap.Characteristic.ValveType, this.hap.Characteristic.ValveType.IRRIGATION);
+      zoneData.service.updateCharacteristic(this.hap.Characteristic.ConfiguredName, zone.name);
+      zoneData.service.updateCharacteristic(
+        this.hap.Characteristic.IsConfigured,
+        zone.enabled === true ? this.hap.Characteristic.IsConfigured.CONFIGURED : this.hap.Characteristic.IsConfigured.NOT_CONFIGURED,
+      );
+      zoneData.service.updateCharacteristic(this.hap.Characteristic.SetDuration, zone.runtime);
+
+      // If the zone is not actively running, keep HomeKit in a clean idle state.
+      if (zoneData.run === undefined) {
+        zoneData.service.updateCharacteristic(this.hap.Characteristic.Active, this.hap.Characteristic.Active.INACTIVE);
+        zoneData.service.updateCharacteristic(this.hap.Characteristic.InUse, this.hap.Characteristic.InUse.NOT_IN_USE);
+        zoneData.service.updateCharacteristic(this.hap.Characteristic.RemainingDuration, 0);
+      }
+    });
+  }
+
+  #setupFlowSensor(deviceData = {}, atStart = false) {
+    // No flow pin configured, so remove any existing flow sensor
+    if (deviceData.sensorFlowPin === undefined) {
+      if (this.#flowSensor !== undefined) {
+        this.#flowSensor.onShutdown();
+        this.#flowSensor = undefined;
+
+        if (atStart === false) {
+          this?.log?.info?.('Flow sensor on "%s" has been removed', this.deviceData.sensorFlowPin);
+        }
+      }
+
+      return;
+    }
+
+    // We do not have an existing flow sensor, so set one up
+    if (this.#flowSensor === undefined) {
+      this.#flowSensor = new FlowSensor(this.log, this.uuid, {
+        sensorPin: deviceData.sensorFlowPin,
+        flowRate: deviceData.flowRate,
+        leakDetection: deviceData.leakSensor === true,
+        leakTimeout: WATER_LEAK_TIMEOUT,
+      });
+
+      if (atStart === false) {
+        this?.log?.info?.('Flow sensor on "%s" has been added', this.deviceData.sensorFlowPin);
+      }
+
+      return;
+    }
+
+    // Updated details on an existing flow sensor
+    this.#flowSensor.onUpdate({
+      sensorPin: deviceData.sensorFlowPin,
+      flowRate: deviceData.flowRate,
+      leakDetection: deviceData.leakSensor === true,
+      leakTimeout: WATER_LEAK_TIMEOUT,
+    });
+  }
+
+  #setupLeakSensor(deviceData = {}, atStart = false) {
+    // HomeKit leak sensor is only useful when leak detection and flow sensing are both configured.
+    // This function should be called AFTER flow sensor setup
+    if (this.#flowSensor !== undefined && deviceData.leakSensor === true) {
+      if (this.leakSensorService === undefined) {
+        this.leakSensorService = this.addHKService(this.hap.Service.LeakSensor, '', 1, {});
+        if (atStart === false) {
+          this?.log?.info?.('Leak sensor', deviceData.waterLeakAlert === true ? 'with alerting' : '');
+        }
+      }
+
+      this.leakSensorService.updateCharacteristic(
+        this.hap.Characteristic.LeakDetected,
+        this.leakDetected === true
+          ? this.hap.Characteristic.LeakDetected.LEAK_DETECTED
+          : this.hap.Characteristic.LeakDetected.LEAK_NOT_DETECTED,
+      );
+
+      return;
+    }
+
+    // Leak sensor is no longer configured, so remove the HomeKit service.
+    if (this.leakSensorService !== undefined) {
+      this.accessory.removeService(this.leakSensorService);
+      this.leakSensorService = undefined;
+      this.leakDetected = false;
+
+      if (atStart === false) {
+        this?.log?.info?.('Leak sensor has been removed');
+      }
     }
   }
 
@@ -1086,12 +1367,60 @@ export default class IrrigationSystem extends HomeKitDevice {
         .replaceAll('\'', '&#039;');
     };
 
+    let formatLastRun = (time) => {
+      if (Number.isFinite(Number(time)) !== true) {
+        return 'Never run';
+      }
+
+      let lastRunTime = Number(time);
+
+      // History time is stored in Unix seconds, convert to milliseconds.
+      if (lastRunTime < 1000000000000) {
+        lastRunTime = lastRunTime * 1000;
+      }
+
+      let seconds = Math.max(0, Math.floor((Date.now() - lastRunTime) / 1000));
+      let days = Math.floor(seconds / 86400);
+      let hours = Math.floor(seconds / 3600);
+      let minutes = Math.floor(seconds / 60);
+
+      if (days > 0) {
+        return 'Last run ' + days + ' day' + (days === 1 ? '' : 's') + ' ago';
+      }
+
+      if (hours > 0) {
+        return 'Last run ' + hours + ' hour' + (hours === 1 ? '' : 's') + ' ago';
+      }
+
+      if (minutes > 0) {
+        return 'Last run ' + minutes + ' min ago';
+      }
+
+      return 'Last run just now';
+    };
+
     let formatDuration = (seconds) => {
       let duration = Number.isFinite(Number(seconds)) === true ? Math.max(0, Math.floor(Number(seconds))) : 0;
       let minutes = Math.floor(duration / 60);
       let remainingSeconds = duration % 60;
 
       return String(minutes).padStart(2, '0') + ':' + String(remainingSeconds).padStart(2, '0');
+    };
+
+    let sprinklerIcon = () => {
+      return '<svg viewBox="0 0 24 24"><path d="M12 14v7"/><path d="M8 21h8"/><path d="M9 14h6"/><path d="M12 4v3"/><path d="M6 7l2 2"/><path d="M18 7l-2 2"/><path d="M4 12h3"/><path d="M20 12h-3"/></svg>';
+    };
+
+    let checkIcon = () => {
+      return '<svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg>';
+    };
+
+    let waterIcon = () => {
+      return '<svg viewBox="0 0 24 24"><path d="M12 3C12 3 6 10 6 14a6 6 0 0 0 12 0c0-4-6-11-6-11z"/></svg>';
+    };
+
+    let bucketIcon = () => {
+      return '<svg viewBox="0 0 24 24"><path d="M6 4h12"/><path d="M7 4l1 17h8l1-17"/><path d="M9 9h6"/></svg>';
     };
 
     // Find active zone and live runtime values.
@@ -1117,393 +1446,702 @@ export default class IrrigationSystem extends HomeKitDevice {
       remaining <= activeRuntime
         ? Math.max(0, Math.min(100, Math.round(((activeRuntime - remaining) / activeRuntime) * 100)))
         : 0;
+    let systemFlowRate =
+      Number.isFinite(Number(this.#lastFlowTime)) === true && Date.now() - Number(this.#lastFlowTime) <= 3000
+        ? Number(this.#lastFlowRate)
+        : 0;
     let flowRate =
       activeZoneData !== undefined &&
       typeof activeZoneData.run === 'object' &&
       Number.isFinite(Number(activeZoneData.run.flowRate)) === true
         ? Number(activeZoneData.run.flowRate)
-        : 0;
-
+        : systemFlowRate;
     let waterUsed =
       activeZoneData !== undefined &&
       typeof activeZoneData.run === 'object' &&
       Number.isFinite(Number(activeZoneData.run.waterUsed)) === true
         ? Number(activeZoneData.run.waterUsed)
-        : 0;
+        : Number(this.#unassignedWaterUsed);
 
-    // Leak card only renders when the leak sensor is configured.
+    let isFlowActive = flowRate > 0;
+    let isLeakGracePeriod =
+      Number.isFinite(Number(this.lastValveClose)) === true &&
+      this.lastValveClose > 0 &&
+      Date.now() - Number(this.lastValveClose) <= WATER_LEAK_TIMEOUT;
+
+    let isExpectedFlow = activeZoneData !== undefined || isLeakGracePeriod === true;
+    let isUnexpectedFlow = isFlowActive === true && isExpectedFlow === false;
+
+    let enabledZones = Object.values(this.deviceData?.zones || []).filter((zone) => zone?.enabled === true).length;
+    let activeZones = Object.values(this.#zones || {}).filter((zone) => zone?.run !== undefined).length;
+
+    // Leak status values.
     let leakConfigured = this.leakSensorService !== undefined;
     let leakStatus = this.leakDetected === true ? 'alert' : 'ok';
 
-    let css = `
-.irrigation-dashboard .dashboard-section {
-  max-width: 980px;
-}
+    // Render the top system summary strip.
+    let renderSummaryCard = () => {
+      let isOn = this.deviceData.power === true;
+      let html = '';
 
+      html += '<section class="card dashboard-summary-card ' + (isOn ? 'on' : 'off') + '">';
+      html += '<div class="dashboard-summary-content">';
+
+      html +=
+        '<button class="dashboard-power-button" title="' +
+        (isOn ? 'Turn off irrigation system' : 'Turn on irrigation system') +
+        '" onclick="event.stopPropagation(); sendAction(\'power\', { power: ' +
+        (isOn ? 'false' : 'true') +
+        ' })">';
+      html += '<svg viewBox="0 0 24 24"><path d="M12 3v8"/><path d="M6.4 7.6a8 8 0 1 0 11.2 0"/></svg>';
+      html += '</button>';
+
+      html += '<div class="dashboard-card-text">';
+      html += '<div class="dashboard-card-heading">System Power</div>';
+      html += '<div class="dashboard-card-title">' + (isOn ? 'Enabled' : 'Disabled') + '</div>';
+      html += '<div class="dashboard-card-sub">';
+      html += isOn ? 'Irrigation zones can run normally' : 'All zones are prevented from running';
+      html += '</div>';
+      html += '</div>';
+
+      html += '<div class="dashboard-summary-stat">';
+      html += '<svg viewBox="0 0 24 24"><path d="M5 19V9"/><path d="M10 19V5"/><path d="M15 19v-7"/><path d="M20 19V8"/></svg>';
+      html += '<div>';
+      html += '<div class="dashboard-summary-stat-title">Zones</div>';
+      html += '<div class="dashboard-summary-stat-value">' + activeZones + ' Active / ' + enabledZones + ' Enabled</div>';
+      html += '</div>';
+      html += '</div>';
+
+      html +=
+        '<div class="dashboard-summary-stat dashboard-flow-stat ' +
+        (isUnexpectedFlow === true ? 'alert' : isExpectedFlow === true ? 'active' : '') +
+        '">';
+      html += waterIcon();
+      html += '<div>';
+      html += '<div class="dashboard-summary-stat-title">Flow</div>';
+      html += '<div class="dashboard-summary-stat-value">' + flowRate.toFixed(1) + ' L/min</div>';
+      html += '</div>';
+      html += '</div>';
+
+      html += '<div class="dashboard-summary-stat dashboard-water-used-stat ' + (isUnexpectedFlow === true ? 'alert' : '') + '">';
+      html += bucketIcon();
+      html += '<div>';
+      html += '<div class="dashboard-summary-stat-title">Water Used</div>';
+      html += '<div class="dashboard-summary-stat-value">' + Math.round(waterUsed).toLocaleString() + ' L this run</div>';
+      html += '</div>';
+      html += '</div>';
+
+      if (leakConfigured === true) {
+        html += '<div class="dashboard-summary-stat ' + leakStatus + '">';
+        html +=
+          this.leakDetected === true
+            ? '<svg viewBox="0 0 24 24"><path d="M12 3C12 3 6 10 6 14a6 6 0 0 0 12 0c0-4-6-11-6-11z"/><path d="M12 10v4"/><path d="M12 17h.01"/></svg>'
+            : checkIcon();
+        html += '<div>';
+        html += '<div class="dashboard-summary-stat-title">Leak</div>';
+        html += '<div class="dashboard-summary-stat-value">' + (this.leakDetected === true ? 'Detected' : 'No Leak') + '</div>';
+        html += '</div>';
+        html += '</div>';
+      }
+
+      html += '</div>';
+      html += '</section>';
+
+      return html;
+    };
+
+    // Render all zone state and manual controls.
+    let renderZonesSection = () => {
+      let html = '';
+
+      html += '<div class="dashboard-section-title">';
+      html += '<div class="card-title">Zones</div>';
+      html += '<div class="list-sub">Manage your irrigation zones</div>';
+      html += '</div>';
+
+      html += '<section class="card dashboard-card dashboard-zones-card">';
+
+      html +=
+        '<div class="dashboard-card-header dashboard-zones-header" onclick="event.stopPropagation(); toggleCollapse(\'zones-list\')">';
+      html += '<div class="dashboard-card-text">';
+      html += '<div class="dashboard-card-heading">All Zones</div>';
+      html += '<div class="dashboard-card-sub">';
+      html += activeZone !== undefined ? escapeHTML(activeZone.name) + ' currently running' : 'Run a zone manually';
+      html += '</div>';
+      html += '</div>';
+      html += '<button class="dashboard-collapse-toggle" data-collapse="zones-list">';
+      html += '<svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>';
+      html += '</button>';
+      html += '</div>';
+
+      html += '<div id="zones-list" class="dashboard-zones-list dashboard-collapse">';
+
+      Object.values(this.deviceData?.zones || []).forEach((zone) => {
+        let zoneData = this.#zones?.[zone.uuid];
+        let isRunning = zoneData?.run !== undefined;
+        let runtime = Number.isFinite(Number(zone.runtime)) === true ? Number(zone.runtime) : 0;
+
+        let historyEntries =
+          typeof this?.historyService?.getHistory === 'function' && zoneData?.service !== undefined
+            ? this.historyService.getHistory(this.hap.Service.Valve, zoneData.service.subtype)
+            : [];
+
+        let lastRunEntry =
+          typeof this?.historyService?.lastHistory === 'function' && zoneData?.service !== undefined
+            ? this.historyService.lastHistory(this.hap.Service.Valve, zoneData.service.subtype)
+            : undefined;
+
+        let completedRuns = historyEntries.filter((entry) => {
+          return (
+            Number(entry?.status) === 0 &&
+            Number.isFinite(Number(entry?.water)) === true &&
+            Number(entry.water) > 0 &&
+            Number.isFinite(Number(entry?.duration)) === true &&
+            Number(entry.duration) > 0
+          );
+        });
+
+        if (
+          lastRunEntry === undefined ||
+          Number(lastRunEntry?.status) !== 0 ||
+          Number.isFinite(Number(lastRunEntry?.water)) !== true ||
+          Number(lastRunEntry.water) <= 0 ||
+          Number.isFinite(Number(lastRunEntry?.duration)) !== true ||
+          Number(lastRunEntry.duration) <= 0
+        ) {
+          lastRunEntry = completedRuns.length > 0 ? completedRuns[completedRuns.length - 1] : undefined;
+        }
+
+        let lastRun = formatLastRun(lastRunEntry?.time);
+        let recentRuns = completedRuns.slice(-5);
+        let lastFlowRate =
+          recentRuns.length > 0
+            ? recentRuns.reduce((total, entry) => total + Number(entry.water) / (Number(entry.duration) / 60), 0) / recentRuns.length
+            : 0;
+        let estimatedUsage = lastFlowRate > 0 ? Math.round((lastFlowRate * runtime) / 60) : undefined;
+
+        html += '<div class="dashboard-zone-row' + (isRunning === true ? ' running' : '') + '">';
+
+        html += '<div class="dashboard-zone-icon">';
+        html += sprinklerIcon();
+        html += '</div>';
+
+        html += '<div class="dashboard-zone-main">';
+        html += '<div class="dashboard-zone-name">' + escapeHTML(zone.name) + '</div>';
+        html += '<div class="dashboard-zone-meta">';
+        html += Math.round(runtime / 60) + ' min • ' + (isRunning === true ? 'Currently running' : lastRun);
+        html += '</div>';
+        html += '</div>';
+
+        html += '<div class="dashboard-zone-stat">';
+        html += waterIcon();
+        html +=
+          '<span>' +
+          (isRunning === true ? flowRate.toFixed(1) + ' L/min' : lastFlowRate > 0 ? lastFlowRate.toFixed(1) + ' L/min' : '—') +
+          '</span>';
+        html += '</div>';
+
+        html += '<div class="dashboard-zone-stat">';
+        html += bucketIcon();
+        html += '<span>';
+        html +=
+          isRunning === true
+            ? Math.round(waterUsed).toLocaleString() + ' L'
+            : estimatedUsage !== undefined
+              ? 'Est. ' + estimatedUsage.toLocaleString() + ' L'
+              : 'No estimate';
+        html += '</span>';
+        html += '</div>';
+
+        if (isRunning === true) {
+          html +=
+            '<button class="dashboard-active-stop" title="Stop active zone" onclick="event.stopPropagation(); sendAction(\'zone\', { uuid: \'' +
+            escapeHTML(zone.uuid) +
+            '\', active: false })">';
+          html += '<span class="stop-icon"></span>';
+          html += 'Stop';
+          html += '</button>';
+        } else {
+          html +=
+            '<button class="dashboard-zone-run" ' +
+            (zone.enabled !== true || this.deviceData.power !== true ? 'disabled ' : '') +
+            'onclick="event.stopPropagation(); sendAction(\'zone\', { uuid: \'' +
+            escapeHTML(zone.uuid) +
+            '\', active: true })">';
+          html += '<span class="run-icon"></span>';
+          html += 'Run';
+          html += '</button>';
+        }
+
+        if (isRunning === true) {
+          html += '<div class="dashboard-zone-active-details">';
+          html += '<div class="dashboard-active-progress">';
+          html += '<div class="dashboard-active-progress-fill" style="width:' + complete + '%"></div>';
+          html += '</div>';
+
+          html += '<div class="dashboard-active-stats">';
+          html += '<div class="dashboard-active-stat">';
+          html += '<span class="dashboard-active-stat-value">' + complete + '% complete</span>';
+          html += '</div>';
+
+          html += '<div class="dashboard-active-stat">';
+          html += '<span class="dashboard-active-stat-value">' + formatDuration(remaining) + ' remaining</span>';
+          html += '</div>';
+          html += '</div>';
+          html += '</div>';
+        }
+
+        html += '</div>';
+      });
+
+      html += '</div>';
+      html += '</section>';
+
+      return html;
+    };
+
+    // Render configured water tank cards.
+    let renderTankSection = () => {
+      let html = '';
+
+      html += '<div class="dashboard-section-title">';
+      html += '<div class="card-title">Water Tanks</div>';
+      html += '<div class="list-sub">Current water levels in configured tanks</div>';
+      html += '</div>';
+
+      html += '<div class="dashboard-tank-grid">';
+
+      Object.values(this.deviceData?.tanks || []).forEach((tankConfig) => {
+        let tank = this.#tanks?.[tankConfig.uuid];
+        let percentage = Number.isFinite(Number(tank?.percentage)) === true ? Math.round(Number(tank.percentage)) : 0;
+        let fillHeight = percentage === 0 ? 2 : percentage;
+        let emptyClass = percentage === 0 ? ' tank-empty' : '';
+        let capacity = Number.isFinite(Number(tankConfig?.capacity)) === true ? Number(tankConfig.capacity) : 0;
+        let litres = Math.round((capacity * percentage) / 100);
+        let name = typeof tankConfig?.name === 'string' && tankConfig.name.trim() !== '' ? tankConfig.name.trim() : 'Water Tank';
+        let updated =
+          Number.isFinite(Number(tank?.lastUpdated)) === true
+            ? new Date(tank.lastUpdated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+            : undefined;
+        let stale = Number.isFinite(Number(tank?.lastUpdated)) === true && Date.now() - Number(tank.lastUpdated) > 300000;
+
+        html += '<section class="card dashboard-card dashboard-tank-card">';
+
+        html += '<div class="dashboard-card-text">';
+        html += '<div class="dashboard-card-heading">' + escapeHTML(name) + '</div>';
+        html += '</div>';
+
+        html += '<div class="dashboard-tank-body">';
+        html += '<div class="tank-graphic">';
+        html += '<div class="tank-fill' + emptyClass + '" style="height:' + fillHeight + '%"></div>';
+        html += '<div class="tank-shine"></div>';
+        html += '</div>';
+
+        html += '<div class="dashboard-tank-stats">';
+        html += '<div class="dashboard-tank-percent">' + percentage + '%</div>';
+        html += '<div class="dashboard-tank-litres">' + litres.toLocaleString() + ' L</div>';
+        html += '<div class="dashboard-tank-capacity">/ ' + capacity.toLocaleString() + ' L</div>';
+
+        if (percentage === 0) {
+          html += '<div class="dashboard-tank-empty-label">Empty</div>';
+        }
+
+        if (updated !== undefined) {
+          html += '<div class="dashboard-tank-updated' + (stale === true ? ' stale' : '') + '">Updated: ' + escapeHTML(updated) + '</div>';
+        }
+
+        html += '</div>';
+        html += '</div>';
+        html += '</section>';
+      });
+
+      html += '</div>';
+
+      return html;
+    };
+
+    let css = `
+/* Dashboard layout */
+.irrigation-dashboard .dashboard-section,
 .irrigation-dashboard .dashboard-inner {
   max-width: 980px;
 }
 
-.irrigation-dashboard .dashboard-card-header {
-  margin-bottom: 18px;
+/* Collapsible sections */
+.irrigation-dashboard .dashboard-collapse {
+  max-height: 0;
+  overflow: hidden;
+  opacity: 0;
+  transition: max-height 0.25s ease, opacity 0.2s ease;
 }
 
-.irrigation-dashboard .dashboard-active-card,
-.irrigation-dashboard .dashboard-leak-card {
+.irrigation-dashboard .dashboard-collapse.open {
+  max-height: 2000px;
+  opacity: 1;
+}
+
+/* Zones list can grow freely */
+.irrigation-dashboard .dashboard-zones-list.dashboard-collapse.open {
+  max-height: none;
+  overflow: visible;
+}
+
+/* Common card system */
+.irrigation-dashboard .dashboard-card {
   width: 100%;
-  max-width: 760px;
-}
-
-.irrigation-dashboard .dashboard-active-card {
-  padding: 18px 22px;
+  max-width: 920px;
+  padding: 16px 22px;
   margin-bottom: 34px;
-  border: 1px solid rgba(49, 182, 75, 0.22);
-  background: rgba(49, 182, 75, 0.035);
+  border: 1px solid rgba(0,0,0,0.08);
+  border-radius: 12px;
+  background: var(--card, #fff);
+  box-sizing: border-box;
 }
 
-.irrigation-dashboard .dashboard-active-card.running {
-  border-color: rgba(15, 111, 232, 0.25);
-  background: rgba(15, 111, 232, 0.035);
-}
-
-.irrigation-dashboard .dashboard-active-content {
+/* Common card header layout */
+.irrigation-dashboard .dashboard-card-header {
   display: grid;
-  grid-template-columns: 64px minmax(280px, 1fr) 96px 130px;
-  gap: 18px;
+  grid-template-columns: auto 1fr auto;
+  gap: 16px;
   align-items: center;
 }
 
-.irrigation-dashboard .dashboard-active-icon {
-  width: 52px;
-  height: 52px;
-  border: 3px solid #2f7d43;
-  border-radius: 50%;
-  color: #2f7d43;
+.irrigation-dashboard .dashboard-card-text {
+  min-width: 0;
+}
+
+.irrigation-dashboard .dashboard-card-heading {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.irrigation-dashboard .dashboard-card-title {
+  margin-top: 4px;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.irrigation-dashboard .dashboard-card-sub {
+  margin-top: 5px;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+/* Toggle button */
+.irrigation-dashboard .dashboard-collapse-toggle {
+  width: 28px;
+  height: 28px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  color: var(--muted);
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
-.irrigation-dashboard .dashboard-active-card.running .dashboard-active-icon {
-  border-color: #0f6fe8;
-  color: #0f6fe8;
+.irrigation-dashboard .dashboard-collapse-toggle svg {
+  width: 20px;
+  height: 20px;
+  stroke: currentColor;
+  stroke-width: 2.5;
+  fill: none;
+  transition: transform 0.25s ease;
 }
 
-.irrigation-dashboard .dashboard-active-icon svg,
-.irrigation-dashboard .dashboard-active-stat svg,
-.irrigation-dashboard .dashboard-leak-icon svg {
+.irrigation-dashboard .dashboard-collapse-toggle.open svg {
+  transform: rotate(180deg);
+}
+
+/* Shared SVG icon styling */
+.irrigation-dashboard svg {
   fill: none;
   stroke: currentColor;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
 
-.irrigation-dashboard .dashboard-active-icon svg {
-  width: 28px;
-  height: 28px;
-  stroke-width: 2.4;
+.irrigation-dashboard .dashboard-power-button svg {
+  width: 26px;
+  height: 26px;
+  stroke-width: 2.6;
 }
 
-.irrigation-dashboard .dashboard-active-details {
-  display: flex;
-  flex-direction: column;
-}
-
-.irrigation-dashboard .dashboard-active-title {
-  color: #2f7d43;
-  font-size: 18px;
-  font-weight: 700;
-}
-
-.irrigation-dashboard .dashboard-active-card.running .dashboard-active-title {
+.irrigation-dashboard .dashboard-summary-stat svg {
+  width: 24px;
+  height: 24px;
   color: #0f6fe8;
+  stroke-width: 2.2;
+  flex-shrink: 0;
 }
 
-.irrigation-dashboard .dashboard-active-sub {
-  margin-top: 5px;
-  color: var(--muted);
-  font-size: 14px;
-}
-
-.irrigation-dashboard .dashboard-active-stats {
-  margin-top: 10px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 18px;
-}
-
-.irrigation-dashboard .dashboard-active-stat {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  color: var(--muted);
-  font-size: 14px;
-}
-
-.irrigation-dashboard .dashboard-active-stat svg {
+.irrigation-dashboard .dashboard-zone-icon svg,
+.irrigation-dashboard .dashboard-zone-stat svg {
   width: 18px;
   height: 18px;
   color: #0f6fe8;
   stroke-width: 2.2;
 }
 
-.irrigation-dashboard .dashboard-active-stat-label {
-  color: var(--muted);
+/* System summary */
+.irrigation-dashboard .dashboard-summary-card {
+  margin-bottom: 36px;
+  border-color: rgba(49, 182, 75, 0.22);
+  background: rgba(148, 163, 184, 0.035);
 }
 
-.irrigation-dashboard .dashboard-active-stat-value {
-  color: var(--text);
-  font-weight: 700;
+.irrigation-dashboard .dashboard-summary-card.off {
+  border-color: rgba(148, 163, 184, 0.25);
 }
 
-.irrigation-dashboard .dashboard-active-time {
-  min-width: 120px;
-  padding-left: 20px;
+.irrigation-dashboard .dashboard-summary-card .dashboard-card-title {
+  color: #2f7d43;
+}
+
+.irrigation-dashboard .dashboard-summary-card.off .dashboard-card-title {
+  color: #64748b;
+}
+
+.irrigation-dashboard .dashboard-summary-content {
+  display: grid;
+  grid-template-columns: 64px minmax(260px, 1fr) repeat(4, minmax(110px, auto));
+  gap: 20px;
+  align-items: center;
+}
+
+.irrigation-dashboard .dashboard-summary-stat {
+  min-height: 48px;
+  padding-left: 22px;
   border-left: 1px solid rgba(0, 0, 0, 0.08);
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
-.irrigation-dashboard .dashboard-active-time-label {
+.irrigation-dashboard .dashboard-summary-stat-title {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.15;
+}
+
+.irrigation-dashboard .dashboard-summary-stat-value {
+  margin-top: 3px;
   color: var(--muted);
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 400;
+  line-height: 1.15;
 }
 
-.irrigation-dashboard .dashboard-active-time-value {
-  margin-top: 4px;
-  color: #0f6fe8;
-  font-size: 24px;
-  font-weight: 700;
-}
-
-.irrigation-dashboard .dashboard-active-time-total {
-  margin-top: 2px;
-  color: var(--muted);
-  font-size: 14px;
-}
-
-.irrigation-dashboard .dashboard-progress {
-  width: 86px;
-  height: 86px;
+/* Power button */
+.irrigation-dashboard .dashboard-power-button {
+  width: 52px;
+  height: 52px;
   border-radius: 50%;
-  background:
-    radial-gradient(circle closest-side, #ffffff 72%, transparent 73%),
-    conic-gradient(#0f6fe8 var(--progress), #e5e7eb 0);
   display: flex;
   align-items: center;
   justify-content: center;
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease, transform 0.15s ease;
 }
 
-.irrigation-dashboard .dashboard-progress-inner {
-  text-align: center;
+.irrigation-dashboard .dashboard-summary-card.off .dashboard-power-button {
+  border: 2px solid #94a3b8;
+  background: rgba(148, 163, 184, 0.08);
+  color: #64748b;
 }
 
-.irrigation-dashboard .dashboard-progress-percent {
-  font-size: 18px;
-  font-weight: 700;
-  line-height: 1;
+.irrigation-dashboard .dashboard-summary-card.on .dashboard-power-button {
+  border: 2px solid #2f7d43;
+  background: rgba(49, 182, 75, 0.08);
+  color: #2f7d43;
 }
 
-.irrigation-dashboard .dashboard-progress-label {
-  margin-top: 4px;
-  color: var(--muted);
-  font-size: 10px;
-  line-height: 1;
+.irrigation-dashboard .dashboard-power-button:hover {
+  transform: translateY(-1px);
 }
 
-.irrigation-dashboard .dashboard-leak-card {
+.irrigation-dashboard .dashboard-summary-card.off .dashboard-power-button:hover {
+  background: rgba(148, 163, 184, 0.14);
+}
+
+.irrigation-dashboard .dashboard-summary-card.on .dashboard-power-button:hover {
+  background: rgba(49, 182, 75, 0.16);
+}
+
+.irrigation-dashboard .dashboard-power-button:hover svg {
+  transform: scale(1.05);
+}
+
+/* Flow state in summary */
+.irrigation-dashboard .dashboard-flow-stat.active svg,
+.irrigation-dashboard .dashboard-flow-stat.active .dashboard-summary-stat-value {
+  color: #2f7d43;
+}
+
+.irrigation-dashboard .dashboard-flow-stat.alert svg,
+.irrigation-dashboard .dashboard-flow-stat.alert .dashboard-summary-stat-title,
+.irrigation-dashboard .dashboard-flow-stat.alert .dashboard-summary-stat-value {
+  color: #d94444;
+}
+
+/* Unexpected water usage in summary */
+.irrigation-dashboard .dashboard-water-used-stat.alert svg,
+.irrigation-dashboard .dashboard-water-used-stat.alert .dashboard-summary-stat-title,
+.irrigation-dashboard .dashboard-water-used-stat.alert .dashboard-summary-stat-value {
+  color: #d94444;
+}
+
+/* Leak alert state in summary */
+.irrigation-dashboard .dashboard-summary-stat.alert .dashboard-summary-stat-title,
+.irrigation-dashboard .dashboard-summary-stat.alert .dashboard-summary-stat-value,
+.irrigation-dashboard .dashboard-summary-stat.alert svg {
+  color: #d94444;
+}
+
+/* Zones */
+.irrigation-dashboard .dashboard-zones-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+.irrigation-dashboard .dashboard-zones-header {
   padding: 16px 22px;
-  margin-bottom: 34px;
-}
-
-.irrigation-dashboard .dashboard-leak-card.ok {
-  border: 1px solid rgba(49, 182, 75, 0.22);
-  background: rgba(49, 182, 75, 0.035);
-}
-
-.irrigation-dashboard .dashboard-leak-card.alert {
-  border: 1px solid rgba(217, 68, 68, 0.35);
-  background: rgba(217, 68, 68, 0.06);
-}
-
-.irrigation-dashboard .dashboard-leak-content {
   display: grid;
-  grid-template-columns: 52px 1fr auto;
+  grid-template-columns: 1fr auto;
   gap: 16px;
   align-items: center;
+  cursor: pointer;
 }
 
-.irrigation-dashboard .dashboard-leak-icon {
-  width: 44px;
-  height: 44px;
+.irrigation-dashboard .dashboard-zones-list {
+  border-top: 1px solid rgba(0,0,0,0.08);
+}
+
+.irrigation-dashboard .dashboard-zone-row {
+  display: grid;
+  grid-template-columns: 44px 1fr 130px 140px 110px;
+  gap: 14px;
+  align-items: center;
+  padding: 12px 22px;
+  border-top: 1px solid rgba(0,0,0,0.06);
+}
+
+.irrigation-dashboard .dashboard-zone-row.running {
+  background: rgba(15, 111, 232, 0.035);
+}
+
+.irrigation-dashboard .dashboard-zone-icon {
+  width: 32px;
+  height: 32px;
   border-radius: 50%;
-  color: #2f7d43;
-  border: 2px solid #2f7d43;
+  background: rgba(15,111,232,0.08);
+  border: 1px solid rgba(15,111,232,0.16);
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
-.irrigation-dashboard .dashboard-leak-card.alert .dashboard-leak-icon {
-  color: #d94444;
-  border-color: #d94444;
-}
-
-.irrigation-dashboard .dashboard-leak-icon svg {
-  width: 22px;
-  height: 22px;
-  stroke-width: 2.4;
-}
-
-.irrigation-dashboard .dashboard-leak-title {
-  color: #2f7d43;
-  font-size: 16px;
+.irrigation-dashboard .dashboard-zone-name {
   font-weight: 700;
 }
 
-.irrigation-dashboard .dashboard-leak-card.alert .dashboard-leak-title {
+.irrigation-dashboard .dashboard-zone-meta {
+  margin-top: 3px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.irrigation-dashboard .dashboard-zone-row.running .dashboard-zone-meta {
+  color: #0f6fe8;
+  font-weight: 700;
+}
+
+.irrigation-dashboard .dashboard-zone-stat {
+  display: flex;
+  gap: 7px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.irrigation-dashboard .dashboard-zone-run,
+.irrigation-dashboard .dashboard-active-stop {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.irrigation-dashboard .dashboard-zone-run {
+  border: 1px solid rgba(15,111,232,0.22);
+  background: rgba(15,111,232,0.045);
+  color: #0f6fe8;
+}
+
+.irrigation-dashboard .dashboard-active-stop {
+  border: 1px solid rgba(217,68,68,0.25);
+  background: rgba(217,68,68,0.05);
   color: #d94444;
 }
 
-.irrigation-dashboard .dashboard-leak-sub {
-  margin-top: 4px;
-  color: var(--muted);
-  font-size: 14px;
+.irrigation-dashboard .dashboard-zone-active-details {
+  grid-column: 1 / -1;
+  padding-left: 58px;
 }
 
-.irrigation-dashboard .dashboard-leak-toggle {
-  border: 0;
-  background: transparent;
-  cursor: pointer;
-  color: var(--muted);
-  padding: 4px;
-}
-
-.irrigation-dashboard .dashboard-leak-toggle svg {
-  width: 20px;
-  height: 20px;
-  stroke: currentColor;
-  stroke-width: 2.5;
-  fill: none;
-  transition: transform 0.25s ease, color 0.2s ease;
-}
-
-.irrigation-dashboard .dashboard-leak-toggle:hover {
-  color: var(--accent);
-}
-
-.irrigation-dashboard .dashboard-leak-toggle.open svg {
-  transform: rotate(180deg);
-}
-
-.irrigation-dashboard .dashboard-collapse {
-  max-height: 0;
+.irrigation-dashboard .dashboard-active-progress {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(0,0,0,0.08);
   overflow: hidden;
-  opacity: 0;
-  transition: max-height 0.25s ease, opacity 0.2s ease, margin-top 0.2s ease;
+  margin: 8px 0;
 }
 
-.irrigation-dashboard .dashboard-collapse.open {
-  max-height: 600px;
-  opacity: 1;
-  margin-top: 16px;
+.irrigation-dashboard .dashboard-active-progress-fill {
+  height: 100%;
+  background: var(--accent);
 }
 
-.irrigation-dashboard .dashboard-tank-grid {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 20px;
-}
-
+/* Water tanks */
 .irrigation-dashboard .dashboard-tank-card {
   width: 300px;
   max-width: 90%;
   padding: 20px 18px;
-  text-align: center;
   margin-right: auto;
+}
+
+.irrigation-dashboard .dashboard-tank-card .dashboard-card-heading {
+  font-size: 16px;
+  margin-bottom: 16px;
 }
 
 .irrigation-dashboard .dashboard-tank-body {
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: 14px;
-}
-
-.irrigation-dashboard .dashboard-tank-name {
-  font-size: 18px;
-  font-weight: 600;
-  text-align: center;
-  margin-bottom: 12px;
-}
-
-.irrigation-dashboard .tank-graphic {
-  position: relative;
-  width: 90px;
-  height: 110px;
-  border: 2px solid #94a3b8;
-  border-radius: 50% / 14%;
-  overflow: hidden;
-  background: linear-gradient(180deg, #f8fafc 0%, #eef2f7 100%);
-  box-shadow: inset 0 0 12px rgba(0, 0, 0, 0.08);
-}
-
-.irrigation-dashboard .tank-graphic::before {
-  content: '';
-  position: absolute;
-  inset: -2px -2px auto -2px;
-  height: 28px;
-  border: 2px solid #94a3b8;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.55);
-  z-index: 3;
-}
-
-.irrigation-dashboard .tank-fill {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: linear-gradient(180deg, #60a5fa 0%, #1d4ed8 100%);
-  transition: height 0.4s ease;
-}
-
-.irrigation-dashboard .tank-fill.tank-empty {
-  opacity: 0.35;
-  background: linear-gradient(180deg, #93c5fd 0%, #60a5fa 100%);
-}
-
-.irrigation-dashboard .tank-fill::before {
-  content: '';
-  position: absolute;
-  left: -5%;
-  right: -5%;
-  top: -13px;
-  height: 26px;
-  border-radius: 50%;
-  background: rgba(147, 197, 253, 0.9);
-}
-
-.irrigation-dashboard .tank-shine {
-  position: absolute;
-  inset: 10px auto 12px 16px;
-  width: 22px;
-  border-radius: 999px;
-  background: linear-gradient(180deg, rgba(255,255,255,0.42), rgba(255,255,255,0.04));
-  z-index: 4;
+  justify-content: center;
+  gap: 26px;
 }
 
 .irrigation-dashboard .dashboard-tank-stats {
   text-align: center;
+  min-width: 92px;
 }
 
 .irrigation-dashboard .dashboard-tank-percent {
   color: #0f6fe8;
   font-size: 28px;
+  line-height: 1;
   font-weight: 700;
 }
 
 .irrigation-dashboard .dashboard-tank-litres {
-  margin-top: 6px;
+  margin-top: 8px;
   font-size: 16px;
   font-weight: 700;
 }
@@ -1525,28 +2163,109 @@ export default class IrrigationSystem extends HomeKitDevice {
   color: #f59e0b;
 }
 
-@media (max-width: 800px) {
-  .irrigation-dashboard .dashboard-active-content {
-    grid-template-columns: 52px 1fr;
+.irrigation-dashboard .tank-graphic {
+  position: relative;
+  width: 80px;
+  height: 98px;
+  border: 2px solid #94a3b8;
+  border-radius: 50% / 14%;
+  overflow: hidden;
+  background: linear-gradient(180deg, #f8fafc 0%, #eef2f7 100%);
+  box-shadow: inset 0 0 12px rgba(0, 0, 0, 0.08);
+}
+
+.irrigation-dashboard .tank-graphic::before {
+  content: '';
+  position: absolute;
+  inset: -2px -2px auto -2px;
+  height: 26px;
+  border: 2px solid #94a3b8;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.55);
+  z-index: 3;
+}
+
+.irrigation-dashboard .tank-fill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(180deg, #93c5fd 0%, #2563eb 100%);
+  transition: height 0.4s ease;
+}
+
+.irrigation-dashboard .tank-fill.tank-empty {
+  opacity: 0.35;
+  background: linear-gradient(180deg, #93c5fd 0%, #60a5fa 100%);
+}
+
+.irrigation-dashboard .tank-fill::before {
+  content: '';
+  position: absolute;
+  left: -5%;
+  right: -5%;
+  top: -7px;
+  height: 14px;
+  border-radius: 50%;
+  background: rgba(147, 197, 253, 0.85);
+}
+
+.irrigation-dashboard .tank-shine {
+  position: absolute;
+  inset: 10px auto 12px 14px;
+  width: 20px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.42), rgba(255,255,255,0.04));
+  z-index: 4;
+}
+
+/* Section spacing */
+.irrigation-dashboard .dashboard-section-title {
+  margin: 28px 0 14px;
+}
+
+.irrigation-dashboard .dashboard-section-title .card-title {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.irrigation-dashboard .dashboard-section-title .list-sub {
+  font-size: 14px;
+  margin-top: 4px;
+}
+
+.irrigation-dashboard .dashboard-zones-card,
+.irrigation-dashboard .dashboard-tank-grid {
+  margin-bottom: 36px;
+}
+
+.irrigation-dashboard .dashboard-tank-grid {
+  margin-top: 10px;
+}
+
+/* Responsive */
+@media (max-width: 900px) {
+  .irrigation-dashboard .dashboard-summary-content {
+    grid-template-columns: 64px 1fr;
   }
 
-  .irrigation-dashboard .dashboard-active-time {
+  .irrigation-dashboard .dashboard-summary-stat {
     grid-column: 1 / -1;
     padding-left: 0;
     border-left: 0;
   }
 
-  .irrigation-dashboard .dashboard-progress {
-    grid-column: 1 / -1;
-  }
-
-  .irrigation-dashboard .dashboard-leak-content {
+  .irrigation-dashboard .dashboard-zone-row {
     grid-template-columns: 44px 1fr;
   }
 
-  .irrigation-dashboard .dashboard-leak-link {
+  .irrigation-dashboard .dashboard-zone-stat,
+  .irrigation-dashboard .dashboard-zone-run,
+  .irrigation-dashboard .dashboard-active-stop {
     grid-column: 1 / -1;
-    text-align: left;
+  }
+
+  .irrigation-dashboard .dashboard-zone-active-details {
     padding-left: 0;
   }
 }
@@ -1555,183 +2274,12 @@ export default class IrrigationSystem extends HomeKitDevice {
     let html = '';
 
     html += '<div class="irrigation-dashboard">';
-    html += '<section class="dashboard-section">';
-    html += '<div class="dashboard-inner">';
+    html += '<section class="dashboard-inner">';
 
-    // Render leak detection card when leak monitoring is configured.
-    if (leakConfigured === true) {
-      html += '<div class="dashboard-card-header">';
-      html += '<div>';
-      html += '<div class="card-title">Leak Detection</div>';
-      html += '<div class="list-sub">Unexpected water flow monitoring</div>';
-      html += '</div>';
-      html += '</div>';
+    html += renderSummaryCard();
+    html += renderZonesSection();
+    html += renderTankSection();
 
-      html += '<section class="card dashboard-leak-card ' + leakStatus + '">';
-      html += '<div class="dashboard-leak-content">';
-
-      html += '<div class="dashboard-leak-icon">';
-      if (this.leakDetected === true) {
-        html +=
-          '<svg viewBox="0 0 24 24"><path d="M12 3C12 3 6 10 6 14a6 6 0 0 0 12 0c0-4-6-11-6-11z"/><path d="M12 10v4"/><path d="M12 17h.01"/></svg>';
-      } else {
-        html += '<svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg>';
-      }
-      html += '</div>';
-
-      html += '<div>';
-      html += '<div class="dashboard-leak-title">' + (this.leakDetected === true ? 'Water Leak Detected' : 'No Leak Detected') + '</div>';
-      html += '<div class="dashboard-leak-sub">';
-      html +=
-        this.leakDetected === true
-          ? 'Unexpected flow detected while no zones are active'
-          : 'No unexpected flow detected while system is idle';
-      html += '</div>';
-      html += '</div>';
-
-      html += '<button class="dashboard-leak-toggle" data-collapse="leak-details" onclick="toggleCollapse(\'leak-details\', this)">';
-      html += '<svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>';
-      html += '</button>';
-      html += '</div>';
-
-      html += '<div id="leak-details" class="dashboard-collapse">';
-      html += '<div class="list">';
-      html += '<div class="list-row">';
-      html += '<div>';
-      html += '<div class="list-title">Flow Buffer</div>';
-      html += '<div class="list-sub">' + this.flowData.length + ' recent readings used for leak detection</div>';
-      html += '</div>';
-      html += '</div>';
-      html += '<div class="list-row">';
-      html += '<div>';
-      html += '<div class="list-title">Detection State</div>';
-      html += '<div class="list-sub">' + (this.leakDetected === true ? 'Leak currently detected' : 'No leak currently detected') + '</div>';
-      html += '</div>';
-      html += '</div>';
-      html += '</div>';
-      html += '</div>';
-
-      html += '</section>';
-    }
-
-    // Render active irrigation zone status.
-    html += '<div class="dashboard-card-header">';
-    html += '<div>';
-    html += '<div class="card-title">Active Zone</div>';
-    html += '<div class="list-sub">Current irrigation zone status</div>';
-    html += '</div>';
-    html += '</div>';
-
-    html += '<section class="card dashboard-active-card' + (activeZone !== undefined ? ' running' : '') + '">';
-    html += '<div class="dashboard-active-content">';
-
-    html += '<div class="dashboard-active-icon">';
-    if (activeZone !== undefined) {
-      html +=
-        '<svg viewBox="0 0 24 24"><path d="M12 14v7"/><path d="M8 21h8"/><path d="M9 14h6"/><path d="M12 4v3"/><path d="M6 7l2 2"/><path d="M18 7l-2 2"/><path d="M4 12h3"/><path d="M20 12h-3"/></svg>';
-    } else {
-      html += '<svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg>';
-    }
-    html += '</div>';
-
-    html += '<div class="dashboard-active-details">';
-    html += '<div class="dashboard-active-title">' + (activeZone !== undefined ? escapeHTML(activeZone.name) : 'No Active Zone') + '</div>';
-    html += '<div class="dashboard-active-sub">' + (activeZone !== undefined ? 'Irrigating' : 'All zones are currently off') + '</div>';
-
-    if (activeZone !== undefined) {
-      html += '<div class="dashboard-active-stats">';
-
-      html += '<div class="dashboard-active-stat">';
-      html += '<svg viewBox="0 0 24 24"><path d="M12 3C12 3 6 10 6 14a6 6 0 0 0 12 0c0-4-6-11-6-11z"/></svg>';
-      html += '<div>';
-      html += '<div class="dashboard-active-stat-label">Flow Rate</div>';
-      html += '<div class="dashboard-active-stat-value">' + flowRate.toFixed(1) + ' L/min</div>';
-      html += '</div>';
-      html += '</div>';
-
-      html += '<div class="dashboard-active-stat">';
-      html += '<svg viewBox="0 0 24 24"><path d="M6 4h12"/><path d="M7 4l1 17h8l1-17"/><path d="M9 9h6"/></svg>';
-      html += '<div>';
-      html += '<div class="dashboard-active-stat-label">Water Used</div>';
-      html += '<div class="dashboard-active-stat-value">' + Math.round(waterUsed).toLocaleString() + ' L</div>';
-      html += '</div>';
-      html += '</div>';
-
-      html += '</div>';
-    }
-
-    html += '</div>';
-
-    if (activeZone !== undefined) {
-      html += '<div class="dashboard-progress" style="--progress: ' + complete + '%">';
-      html += '<div class="dashboard-progress-inner">';
-      html += '<div class="dashboard-progress-percent">' + complete + '%</div>';
-      html += '<div class="dashboard-progress-label">Complete</div>';
-      html += '</div>';
-      html += '</div>';
-
-      html += '<div class="dashboard-active-time">';
-      html += '<div class="dashboard-active-time-label">Time Remaining</div>';
-      html += '<div class="dashboard-active-time-value">' + formatDuration(remaining) + '</div>';
-      html += '<div class="dashboard-active-time-total">of ' + formatDuration(activeRuntime) + '</div>';
-      html += '</div>';
-    }
-
-    html += '</div>';
-    html += '</section>';
-
-    // Render configured water tank cards.
-    html += '<div class="dashboard-card-header">';
-    html += '<div>';
-    html += '<div class="card-title">Water Tanks</div>';
-    html += '<div class="list-sub">Current water levels in configured tanks</div>';
-    html += '</div>';
-    html += '</div>';
-
-    html += '<div class="dashboard-tank-grid">';
-
-    Object.values(this.deviceData?.tanks || []).forEach((tankConfig) => {
-      let tank = this.#tanks?.[tankConfig.uuid];
-
-      let percentage = Number.isFinite(Number(tank?.percentage)) === true ? Math.round(Number(tank.percentage)) : 0;
-      let fillHeight = percentage === 0 ? 4 : percentage;
-      let emptyClass = percentage === 0 ? ' tank-empty' : '';
-      let capacity = Number.isFinite(Number(tankConfig?.capacity)) === true ? Number(tankConfig.capacity) : 0;
-      let litres = Math.round((capacity * percentage) / 100);
-      let name = typeof tankConfig?.name === 'string' && tankConfig.name.trim() !== '' ? tankConfig.name.trim() : 'Water Tank';
-      let updated =
-        Number.isFinite(Number(tank?.lastUpdated)) === true
-          ? new Date(tank.lastUpdated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-          : undefined;
-      let stale = Number.isFinite(Number(tank?.lastUpdated)) === true && Date.now() - Number(tank.lastUpdated) > 300000;
-
-      html += '<section class="card dashboard-tank-card">';
-      html += '<div class="dashboard-tank-name">' + escapeHTML(name) + '</div>';
-      html += '<div class="dashboard-tank-body">';
-      html += '<div class="tank-graphic">';
-      html += '<div class="tank-fill' + emptyClass + '" style="height:' + fillHeight + '%"></div>';
-      html += '<div class="tank-shine"></div>';
-      html += '</div>';
-      html += '<div class="dashboard-tank-stats">';
-      html += '<div class="dashboard-tank-percent">' + percentage + '%</div>';
-      html += '<div class="dashboard-tank-litres">' + litres.toLocaleString() + ' L</div>';
-      html += '<div class="dashboard-tank-capacity">/ ' + capacity.toLocaleString() + ' L</div>';
-
-      if (percentage === 0) {
-        html += '<div class="dashboard-tank-empty-label">Empty</div>';
-      }
-
-      if (updated !== undefined) {
-        html += '<div class="dashboard-tank-updated' + (stale === true ? ' stale' : '') + '">Updated: ' + escapeHTML(updated) + '</div>';
-      }
-
-      html += '</div>';
-      html += '</div>';
-      html += '</section>';
-    });
-
-    html += '</div>';
-    html += '</div>';
     html += '</section>';
     html += '</div>';
 

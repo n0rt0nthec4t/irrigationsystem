@@ -24,7 +24,7 @@
 // - Scheduling via Eve Home (Aqua)
 // - Integrate Apple WeatherKit for weather-aware irrigation
 //
-// Code version: 2026.04.30
+// Code version: 2026.05.04
 // Mark Hulskamp
 'use strict';
 
@@ -47,7 +47,7 @@ HomeKitDevice.PLUGIN_NAME = 'irrigationsystem';
 HomeKitDevice.PLATFORM_NAME = 'IrrigationSystem';
 
 import HomeKitHistory from './HomeKitHistory.js';
-HomeKitDevice.HISTORY = HomeKitHistory;
+HomeKitDevice.EVEHOME = HomeKitHistory;
 
 import HomeKitUI from './HomeKitUI.js';
 
@@ -102,6 +102,7 @@ function loadConfiguration(filename) {
         elevation: 0,
         eveHistory: true,
         powerSwitch: false,
+        usonicBinary: '',
         debug: false,
         hkPairingCode: ACCESSORY_PINCODE,
         webUIPort: 0,
@@ -226,6 +227,8 @@ function loadConfiguration(filename) {
         config.options.elevation = Number.isFinite(Number(value?.elevation)) === true ? Number(value.elevation) : 0;
         config.options.eveHistory = value?.eveHistory === true;
         config.options.powerSwitch = value?.powerSwitch === true;
+        config.options.usonicBinary =
+          typeof value?.usonicBinary === 'string' && value.usonicBinary.trim() !== '' ? value.usonicBinary.trim() : undefined;
         config.options.debug = value?.debug === true;
         config.options.hkPairingCode =
           HomeKitDevice.HK_PIN_3_2_3.test(value?.hkPairingCode) === true || HomeKitDevice.HK_PIN_4_4.test(value?.hkPairingCode) === true
@@ -313,6 +316,7 @@ let deviceData = {
   flowRate: config.options.flowRate,
   maxRuntime: config.options.maxRuntime,
   maxRunningZones: 1, // One zone at a time running only
+  usonicBinary: config.options.usonicBinary,
   powerSwitch: config.options.powerSwitch,
   programs: config.programs,
 };
@@ -360,7 +364,51 @@ if (config.options.webUIPort > 0) {
     ],
     onSaveConfig: async (savedConfig) => {
       fs.writeFileSync(configurationFile, JSON.stringify(savedConfig, null, 2) + '\n');
-      config = loadConfiguration(configurationFile);
+
+      let newConfig = loadConfiguration(configurationFile);
+
+      // Tanks changed
+      if (JSON.stringify(config.tanks) !== JSON.stringify(newConfig.tanks)) {
+        await HomeKitDevice.message(accessory.UUID, HomeKitDevice.UPDATE, {
+          tanks: newConfig.tanks,
+        });
+      }
+
+      // Zones changed
+      if (JSON.stringify(config.zones) !== JSON.stringify(newConfig.zones)) {
+        await HomeKitDevice.message(accessory.UUID, HomeKitDevice.UPDATE, {
+          zones: newConfig.zones,
+        });
+      }
+
+      // Options changed
+      if (JSON.stringify(config.options) !== JSON.stringify(newConfig.options)) {
+        await HomeKitDevice.message(accessory.UUID, HomeKitDevice.UPDATE, {
+          eveHistory: newConfig.options.eveHistory,
+          elevation: newConfig.options.elevation,
+          latitude: newConfig.options.latitude,
+          longitude: newConfig.options.longitude,
+          leakSensor: newConfig.options.leakSensor,
+          waterLeakAlert: newConfig.options.waterLeakAlert,
+          sensorFlowPin: newConfig.options.sensorFlowPin,
+          flowRate: newConfig.options.flowRate,
+          maxRuntime: newConfig.options.maxRuntime,
+          powerSwitch: newConfig.options.powerSwitch,
+        });
+      }
+
+      // Debug changed
+      if (config.options.debug !== newConfig.options.debug) {
+        if (newConfig.options.debug === true) {
+          Logger.setDebugEnabled(true);
+          log.warn('Debugging has been enabled');
+        } else {
+          Logger.setDebugEnabled(false);
+          log.warn('Debugging has been disabled');
+        }
+      }
+
+      config = newConfig;
     },
     onRestart: async () => {
       await shutdown('restart', 1);
@@ -372,6 +420,21 @@ if (config.options.webUIPort > 0) {
       }
 
       return {};
+    },
+    onAction: async (action, data, page) => {
+      if (page === 'dashboard' && action === 'power') {
+        // Action to turn system power on/off virtually
+        tempDevice.setPower(data?.power === true);
+      }
+
+      if (page === 'dashboard' && action === 'zone') {
+        // Action to turn on/off a zone
+        let zone = config.zones.find((item) => item.uuid === data.uuid);
+
+        if (zone !== undefined) {
+          tempDevice.setZoneActive(zone, data.active === true);
+        }
+      }
     },
   });
 

@@ -171,6 +171,7 @@ Defined under options.
 | powerSwitch    | Virtual power switch | false |
 | maxRuntime     | Max zone runtime (seconds) | 7200 |
 | sensorFlowPin  | Flow sensor GPIO | — |
+| usonicBinary   | Path to ultrasonic measurement binary (supports relative paths and `~`) | `./usonic_measure` |
 | waterLeakAlert | Trigger HomeKit alert | false |
 | webUIPort      | HomeKitUI port | 8581 |
 

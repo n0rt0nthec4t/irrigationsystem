@@ -11,48 +11,49 @@ int TRIG, ECHO, TIMES;
 
 static int ping()
 {
-    long ping      = 0;
-    long pong      = 0;
-    float distance = 0;
-    long timeout   = 500000; // 0.5 sec ~ 171 m
+    long start;
+    long ping;
+    long pong;
+    double distance;
+    long timeout = 500000; // 0.5 sec
+
     pinMode(TRIG, OUTPUT);
     pinMode(ECHO, INPUT);
 
-    // Ensure trigger is low.
     digitalWrite(TRIG, LOW);
-    delay(50);
-    
-    // Trigger the ping.
+    delayMicroseconds(2);
+
     digitalWrite(TRIG, HIGH);
-    delayMicroseconds(10); 
+    delayMicroseconds(10);
     digitalWrite(TRIG, LOW);
-    
-    // Wait for ping response, or timeout.
-    while (digitalRead(ECHO) == LOW && micros() < timeout) {
+
+    // Wait for echo HIGH
+    start = micros();
+    while (digitalRead(ECHO) == LOW && (micros() - start) < timeout) {
     }
-    
-    // Cancel on timeout.
-    if (micros() > timeout) {
-        printf("Out of range\n");
-        return 0;
+
+    if ((micros() - start) >= timeout) {
+        printf("OUT OF RANGE\n");
+        return -1;
     }
 
     ping = micros();
-    
-    // Wait for pong response, or timeout.
-    while (digitalRead(ECHO) == HIGH && micros() < timeout) {
+
+    // Wait for echo LOW
+    start = micros();
+    while (digitalRead(ECHO) == HIGH && (micros() - start) < timeout) {
     }
-    
-    // Cancel on timeout.
-    if (micros() > timeout) {
-        printf("Out of range\n");
-        return 0; 
+
+    if ((micros() - start) >= timeout) {
+        printf("OUT OF RANGE\n");
+        return -1;
     }
+
     pong = micros();
-    
-    // Convert ping duration to distance.
-    distance = (float) (pong - ping) * 0.017150;
-    printf("Distance: %.2f cm\n", distance);
+
+    distance = (double)(pong - ping) * 0.017150;
+
+    printf("DISTANCE %.2f\n", distance);
     return 1;
 }
 

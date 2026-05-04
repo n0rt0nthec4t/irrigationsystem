@@ -7,7 +7,7 @@
 //
 // Responsibilities:
 // - Read distance from ultrasonic sensor via external binary
-// - Smooth readings using rolling average buffer
+// - Apply smoothing via rolling buffer
 // - Reject obvious noisy/spike readings
 // - Convert distance to water level and percentage
 // - Emit WATERLEVEL events via HomeKitDevice message bus
@@ -32,7 +32,7 @@
 // - Valid trigger/echo GPIO pins
 // - External ultrasonic binary must exist and be executable
 //
-// Code version 2026.04.29
+// Code version 2026.05.04
 // Mark Hulskamp
 'use strict';
 
@@ -41,30 +41,25 @@ import process from 'node:process';
 import child_process from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import crypto from 'node:crypto';
 import { setInterval, clearInterval, setTimeout, clearTimeout } from 'node:timers';
 
 // Import our modules
 import HomeKitDevice from './HomeKitDevice.js';
+import { validGPIOPin, LOG_LEVELS } from './utils.js';
 
 // Define constants
-const LOG_LEVELS = {
-  INFO: 'info',
-  SUCCESS: 'success',
-  WARN: 'warn',
-  ERROR: 'error',
-  DEBUG: 'debug',
-};
-
-const USONIC_READINGS = 1; // Number of readings per sensor sample
+const USONIC_READINGS = 5; // Number of readings per sensor sample
 const USONIC_MIN_RANGE = 200; // mm
 const USONIC_MAX_RANGE = 4500; // mm
 const USONIC_TIMEOUT = 5000; // ms
 const REFRESH_INTERVAL = 60 * 1000; // ms
-const SMOOTHING_BUFFER = 5; // Number of recent readings to average
+const SMOOTHING_BUFFER = 5; // Number of recent readings in buffer
 const SPIKE_THRESHOLD = 300; // mm
 
 export default class WaterTank {
+  static GPIO = undefined; // GPIO library override
   static WATERLEVEL_EVENT = 'WATERLEVEL';
 
   uuid = undefined;
@@ -108,23 +103,16 @@ export default class WaterTank {
         ? Number(deviceData.minimumLevel)
         : 0;
 
-    this.#triggerPin =
-      Number.isFinite(Number(deviceData?.sensorTrigPin)) === true &&
-      Number(deviceData.sensorTrigPin) >= 0 &&
-      Number(deviceData.sensorTrigPin) <= 26
-        ? Number(deviceData.sensorTrigPin)
-        : undefined;
-
-    this.#echoPin =
-      Number.isFinite(Number(deviceData?.sensorEchoPin)) === true &&
-      Number(deviceData.sensorEchoPin) >= 0 &&
-      Number(deviceData.sensorEchoPin) <= 26
-        ? Number(deviceData.sensorEchoPin)
-        : undefined;
+    this.#triggerPin = validGPIOPin(deviceData?.sensorTrigPin) === true ? Number(deviceData.sensorTrigPin) : undefined;
+    this.#echoPin = validGPIOPin(deviceData?.sensorEchoPin) === true ? Number(deviceData.sensorEchoPin) : undefined;
 
     this.#usonicBinary = path.resolve(
       process.cwd(),
-      typeof deviceData?.usonicBinary === 'string' && deviceData.usonicBinary !== '' ? deviceData.usonicBinary : './usonic_measure',
+      typeof deviceData?.usonicBinary === 'string' && deviceData.usonicBinary.trim() !== ''
+        ? deviceData.usonicBinary.trim().startsWith('~')
+          ? path.join(os.homedir(), deviceData.usonicBinary.trim().slice(1))
+          : deviceData.usonicBinary.trim()
+        : './usonic_measure',
     );
 
     // Validate binary
@@ -163,6 +151,55 @@ export default class WaterTank {
     }, REFRESH_INTERVAL);
   }
 
+  onUpdate(deviceData = {}) {
+    if (typeof deviceData !== 'object' || deviceData === null) {
+      return;
+    }
+
+    if (Object.hasOwn(deviceData, 'sensorHeight') === true) {
+      if (Number.isFinite(Number(deviceData.sensorHeight)) === true && Number(deviceData.sensorHeight) > 0) {
+        this.#sensorHeight = Number(deviceData.sensorHeight);
+      }
+    }
+
+    if (Object.hasOwn(deviceData, 'minimumLevel') === true) {
+      if (Number.isFinite(Number(deviceData.minimumLevel)) === true && Number(deviceData.minimumLevel) >= 0) {
+        this.#minimumLevel = Number(deviceData.minimumLevel);
+      }
+    }
+
+    if (Object.hasOwn(deviceData, 'sensorTrigPin') === true) {
+      this.#triggerPin = validGPIOPin(deviceData.sensorTrigPin) === true ? Number(deviceData.sensorTrigPin) : undefined;
+      this.#distanceBuffer = [];
+    }
+
+    if (Object.hasOwn(deviceData, 'sensorEchoPin') === true) {
+      this.#echoPin = validGPIOPin(deviceData.sensorEchoPin) === true ? Number(deviceData.sensorEchoPin) : undefined;
+      this.#distanceBuffer = [];
+    }
+
+    if (Object.hasOwn(deviceData, 'usonicBinary') === true) {
+      this.#usonicBinary = path.resolve(
+        process.cwd(),
+        typeof deviceData.usonicBinary === 'string' && deviceData.usonicBinary !== '' ? deviceData.usonicBinary : './usonic_measure',
+      );
+
+      this.#distanceBuffer = [];
+    }
+
+    if (this.#echoPin === undefined || this.#triggerPin === undefined) {
+      this?.log?.error?.('No GPIO pins are defined for ultrasonic readings for tank uuid "%s"', this.uuid);
+      return;
+    }
+
+    if (this.#sensorHeight === undefined || this.#sensorHeight - this.#minimumLevel <= 0) {
+      this?.log?.error?.('Invalid tank dimensions for tank uuid "%s"', this.uuid);
+      return;
+    }
+
+    this.#readUsonicSensor();
+  }
+
   async onShutdown() {
     if (this.#readTimer !== undefined) {
       clearInterval(this.#readTimer);
@@ -190,7 +227,13 @@ export default class WaterTank {
     this.#reading = true;
 
     try {
-      let distance = 0;
+      let median = (values = []) => {
+        let sorted = [...values].sort((a, b) => a - b);
+        let middle = Math.floor(sorted.length / 2);
+
+        return sorted.length % 2 !== 0 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+      };
+
       let readings = [];
 
       for (let i = 0; i < USONIC_READINGS; i++) {
@@ -205,30 +248,33 @@ export default class WaterTank {
         return;
       }
 
-      distance = readings.reduce((a, b) => a + b, 0) / readings.length;
+      // Median per-sample reading, robust against one-off ultrasonic spikes.
+      let distance = median(readings);
+
       distance = Math.max(USONIC_MIN_RANGE, Math.min(USONIC_MAX_RANGE, distance));
 
       if (distance > this.#sensorHeight) {
         distance = this.#sensorHeight;
       }
 
-      // Reject obvious ultrasonic spikes before adding to smoothing buffer
+      // Reject obvious ultrasonic spikes before adding to smoothing buffer.
       if (this.#distanceBuffer.length !== 0) {
-        let lastDistance = this.#distanceBuffer[this.#distanceBuffer.length - 1];
+        let baselineDistance = median(this.#distanceBuffer);
 
-        if (Math.abs(distance - lastDistance) > SPIKE_THRESHOLD) {
-          this?.log?.debug?.('Ignoring noisy usonic spike for tank uuid "%s": %s -> %s', this.uuid, lastDistance, distance);
+        if (Math.abs(distance - baselineDistance) > SPIKE_THRESHOLD) {
+          this?.log?.debug?.('Ignoring noisy usonic spike for tank uuid "%s": %s -> %s', this.uuid, baselineDistance, distance);
           return;
         }
       }
 
-      // Smoothing buffer
+      // Rolling distance buffer.
       this.#distanceBuffer.push(distance);
       if (this.#distanceBuffer.length > SMOOTHING_BUFFER) {
         this.#distanceBuffer.shift();
       }
 
-      let avgDistance = this.#distanceBuffer.reduce((a, b) => a + b, 0) / this.#distanceBuffer.length;
+      // Median smoothing over recent samples.
+      let smoothedDistance = median(this.#distanceBuffer);
       let usableHeight = this.#sensorHeight - this.#minimumLevel;
 
       if (usableHeight <= 0) {
@@ -237,13 +283,13 @@ export default class WaterTank {
 
       // Distance is measured from the sensor down to the water surface.
       // Convert to usable water height, clamped between empty and full.
-      this.waterlevel = usableHeight - Math.max(0, avgDistance - USONIC_MIN_RANGE);
+      this.waterlevel = usableHeight - Math.max(0, smoothedDistance - USONIC_MIN_RANGE);
       this.waterlevel = Math.max(0, Math.min(usableHeight, this.waterlevel));
 
       this.percentage = (this.waterlevel / usableHeight) * 100;
       this.percentage = Math.max(0, Math.min(100, this.percentage));
 
-      // Emit event via HomeKitDevice
+      // Emit event via HomeKitDevice.
       if (this.#HomeKitDeviceUUID !== undefined) {
         HomeKitDevice.message(this.#HomeKitDeviceUUID, WaterTank.WATERLEVEL_EVENT, {
           uuid: this.uuid,
@@ -273,6 +319,16 @@ export default class WaterTank {
         resolve(value);
       };
 
+      // Validate binary exists and is executable
+      try {
+        fs.accessSync(this.#usonicBinary, fs.constants.X_OK);
+      } catch {
+        this?.log?.debug?.('usonic binary "%s" is not accessible or executable for tank uuid "%s"', this.#usonicBinary, this.uuid);
+        finish(undefined);
+        return;
+      }
+
+      // Spawn process
       try {
         proc = child_process.spawn(this.#usonicBinary, [this.#triggerPin, this.#echoPin]);
       } catch (error) {
@@ -320,17 +376,119 @@ export default class WaterTank {
           return;
         }
 
-        if (line.startsWith('DISTANCE') === true) {
-          let value = Number(line.split(' ')[1]) * 10;
+        if (line.includes('DISTANCE') === true) {
+          let match = line.match(/([0-9]+(\.[0-9]+)?)/);
 
-          if (Number.isFinite(Number(value)) === true) {
-            finish(Math.max(USONIC_MIN_RANGE, Math.min(USONIC_MAX_RANGE, Number(value))));
-            return;
+          if (match !== null) {
+            let value = Number(match[1]) * 10;
+
+            if (Number.isFinite(value) === true) {
+              finish(Math.max(USONIC_MIN_RANGE, Math.min(USONIC_MAX_RANGE, value)));
+              return;
+            }
           }
         }
 
         finish(undefined);
       });
+    });
+  }
+
+  async #measureDistanceGPIO() {
+    // If no GPIO library assigned, we cannot measure
+    if (WaterTank.GPIO === undefined) {
+      return undefined;
+    }
+
+    // Pins must be valid
+    if (this.#triggerPin === undefined || this.#echoPin === undefined) {
+      return undefined;
+    }
+
+    let self = this;
+
+    return new Promise(async (resolve) => {
+      const TIMEOUT_US = 500000; // 0.5s (~171m max range)
+
+      let riseTime = undefined;
+      let timeoutTimer = undefined;
+      let completed = false;
+
+      function cleanup() {
+        if (timeoutTimer !== undefined) {
+          clearTimeout(timeoutTimer);
+          timeoutTimer = undefined;
+        }
+
+        try {
+          WaterTank.GPIO.poll(self.#echoPin, null);
+          // eslint-disable-next-line no-unused-vars
+        } catch (error) {
+          // Ignore cleanup errors
+        }
+      }
+
+      function finish(distanceCm) {
+        if (completed === true) {
+          return;
+        }
+
+        completed = true;
+        cleanup();
+        resolve(distanceCm);
+      }
+
+      try {
+        // Configure pins (safe to call repeatedly)
+        WaterTank.GPIO.open(self.#triggerPin, WaterTank.GPIO.OUTPUT, WaterTank.GPIO.LOW);
+        WaterTank.GPIO.open(self.#echoPin, WaterTank.GPIO.INPUT);
+
+        // Interrupt handler for BOTH edges
+        WaterTank.GPIO.poll(
+          self.#echoPin,
+          (pin) => {
+            if (completed === true) {
+              return;
+            }
+
+            // Rising edge → start timing
+            if (WaterTank.GPIO.read(pin) === WaterTank.GPIO.HIGH) {
+              riseTime = process.hrtime.bigint();
+              return;
+            }
+
+            // Falling edge → end timing
+            if (riseTime === undefined) {
+              return;
+            }
+
+            let durationUs = Number((process.hrtime.bigint() - riseTime) / 1000n);
+            let distanceCm = durationUs * 0.01715;
+
+            finish(distanceCm);
+          },
+          WaterTank.GPIO.POLL_BOTH,
+        );
+
+        // Timeout guard
+        timeoutTimer = setTimeout(
+          () => {
+            finish(undefined);
+          },
+          Math.ceil(TIMEOUT_US / 1000),
+        );
+
+        // Allow sensor to settle
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
+
+        // Trigger pulse (10µs)
+        WaterTank.GPIO.write(self.#triggerPin, WaterTank.GPIO.HIGH);
+        WaterTank.GPIO.usleep(10);
+        WaterTank.GPIO.write(self.#triggerPin, WaterTank.GPIO.LOW);
+        // eslint-disable-next-line no-unused-vars
+      } catch (error) {
+        finish(undefined);
+      }
     });
   }
 }

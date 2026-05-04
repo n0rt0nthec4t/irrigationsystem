@@ -14,12 +14,22 @@
 // Notes:
 // - Functions are designed to fail safely and return undefined where appropriate
 //
-// Code version 2026.04.29
+// Code version 2026.05.01
 // Mark Hulskamp
 'use strict';
 
 // Define nodejs module requirements
 import { Buffer } from 'node:buffer';
+
+const MIN_GPIO_PIN = 0;
+const MAX_GPIO_PIN = 26;
+const LOG_LEVELS = {
+  INFO: 'info',
+  SUCCESS: 'success',
+  WARN: 'warn',
+  ERROR: 'error',
+  DEBUG: 'debug',
+};
 
 function scaleValue(value, sourceMin, sourceMax, targetMin, targetMax) {
   if (sourceMax === sourceMin) {
@@ -69,5 +79,9 @@ function crc32(valueToHash) {
   return crc32 >>> 0; // return crc32
 }
 
+function validGPIOPin(pin) {
+  return Number.isFinite(Number(pin)) === true && Number(pin) >= MIN_GPIO_PIN && Number(pin) <= MAX_GPIO_PIN;
+}
+
 // Define exports
-export { crc32, scaleValue };
+export { crc32, scaleValue, validGPIOPin, MAX_GPIO_PIN, MIN_GPIO_PIN, LOG_LEVELS };
