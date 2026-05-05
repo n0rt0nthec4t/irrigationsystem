@@ -2,6 +2,35 @@
 
 All notable changes to `irrigationsystem` will be documented in this file. This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.0.1-alpha.9 (2026/05/05)
+
+### Added
+- Added interactive water usage dashboard:
+  - Visual daily usage chart with support for 7, 14, and 30 day ranges
+  - Tooltip support for per-day usage values
+  - Summary metrics including total usage and daily average
+
+- Added persistent dashboard UI state:
+  - Selected usage range is now retained across page refresh
+  - Aligns with existing collapse state persistence behaviour
+
+### Changed
+- Improved chart scaling and rendering:
+  - Normalised bar height calculation for better visual distribution
+  - Ensures consistent rendering across different usage ranges
+
+- Refined 30-day chart layout:
+  - Optimised spacing and bar sizing for dense datasets
+  - Reduced visual clutter by hiding inline labels while retaining tooltips
+
+- Improved frontend rendering stability:
+  - Eliminated inconsistent dropdown behaviour caused by concurrent page refresh
+  - Ensures immediate and reliable range switching after full page reload
+
+- Improved UI consistency:
+  - Fixed alignment and layout issues across different usage ranges
+  - Ensured chart baseline and footer positioning remain consistent
+
 ## v0.0.1-alpha.7 (2026/05/04)
 
 ### Added

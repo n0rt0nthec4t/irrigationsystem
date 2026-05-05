@@ -1,12 +1,12 @@
 // WaterTank
 // Part of irrigationsystem
 //
-// Handles ultrasonic-based water level measurement using an external binary.
-// Designed as a self-contained device that reports readings via the
-// HomeKitDevice messaging system.
+// Handles ultrasonic-based water level measurement.
+// Uses an external binary for accurate sensor timing when available,
+// with optional built-in Node.js GPIO fallback when no binary is configured.
 //
 // Responsibilities:
-// - Read distance from ultrasonic sensor via external binary
+// - Read distance from ultrasonic sensor via external binary or GPIO fallback
 // - Apply smoothing via rolling buffer
 // - Reject obvious noisy/spike readings
 // - Convert distance to water level and percentage
@@ -19,8 +19,8 @@
 // - Polled at fixed interval
 //
 // Flow:
-// - Execute external binary (usonic_measure)
-// - Parse distance output
+// - Execute external binary (usonic_measure), or use GPIO fallback
+// - Parse/normalise distance output
 // - Apply smoothing buffer
 // - Convert to usable tank height
 // - Emit updated level + percentage
@@ -30,7 +30,7 @@
 //
 // Requirements:
 // - Valid trigger/echo GPIO pins
-// - External ultrasonic binary must exist and be executable
+// - External ultrasonic binary, or assigned WaterTank.GPIO library fallback
 //
 // Code version 2026.05.04
 // Mark Hulskamp
@@ -117,9 +117,16 @@ export default class WaterTank {
 
     // Validate binary
     if (fs.existsSync(this.#usonicBinary) === false) {
-      this?.log?.warn?.('Unable to find "%s" used to perform ultrasonic waterlevel measurements', this.#usonicBinary);
-      this?.log?.warn?.('Waterlevel measurements for tank uuid "%s" will be disabled', this.uuid);
-      return;
+      this?.log?.warn?.('Unable to find "%s" used to perform ultrasonic measurements for tank uuid "%s"', this.#usonicBinary, this.uuid);
+
+      if (WaterTank.GPIO !== undefined && this.#triggerPin !== undefined && this.#echoPin !== undefined) {
+        this?.log?.warn?.('Falling back to Node.js GPIO measurements (reduced accuracy) for tank uuid "%s"', this.uuid);
+
+        this.#usonicBinary = undefined;
+      } else {
+        this?.log?.warn?.('No valid ultrasonic measurement method available for tank uuid "%s"', this.uuid);
+        return;
+      }
     }
 
     // Validate pins
@@ -138,7 +145,7 @@ export default class WaterTank {
       'Using GPIO pins "%s" echo and "%s" trigger with "%s" for ultrasonic measurements on tank uuid "%s"',
       this.#echoPin,
       this.#triggerPin,
-      this.#usonicBinary,
+      this.#usonicBinary ?? 'Node.js GPIO fallback',
       this.uuid,
     );
 
@@ -175,15 +182,6 @@ export default class WaterTank {
 
     if (Object.hasOwn(deviceData, 'sensorEchoPin') === true) {
       this.#echoPin = validGPIOPin(deviceData.sensorEchoPin) === true ? Number(deviceData.sensorEchoPin) : undefined;
-      this.#distanceBuffer = [];
-    }
-
-    if (Object.hasOwn(deviceData, 'usonicBinary') === true) {
-      this.#usonicBinary = path.resolve(
-        process.cwd(),
-        typeof deviceData.usonicBinary === 'string' && deviceData.usonicBinary !== '' ? deviceData.usonicBinary : './usonic_measure',
-      );
-
       this.#distanceBuffer = [];
     }
 
@@ -303,6 +301,17 @@ export default class WaterTank {
   }
 
   async #readDistance() {
+    // If no binary is available, use built-in GPIO fallback
+    if (this.#usonicBinary === undefined) {
+      let distance = await this.#measureDistanceGPIO();
+
+      if (Number.isFinite(Number(distance)) === true) {
+        return Math.max(USONIC_MIN_RANGE, Math.min(USONIC_MAX_RANGE, Number(distance) * 10));
+      }
+
+      return undefined;
+    }
+
     return await new Promise((resolve) => {
       let output = '';
       let timeout = undefined;
@@ -315,7 +324,12 @@ export default class WaterTank {
         }
 
         resolved = true;
-        clearTimeout(timeout);
+
+        if (timeout !== undefined) {
+          clearTimeout(timeout);
+          timeout = undefined;
+        }
+
         resolve(value);
       };
 
@@ -323,7 +337,9 @@ export default class WaterTank {
       try {
         fs.accessSync(this.#usonicBinary, fs.constants.X_OK);
       } catch {
-        this?.log?.debug?.('usonic binary "%s" is not accessible or executable for tank uuid "%s"', this.#usonicBinary, this.uuid);
+        this?.log?.debug?.('usonic binary "%s" not executable for tank uuid "%s"', this.#usonicBinary, this.uuid);
+
+        this.#usonicBinary = undefined;
         finish(undefined);
         return;
       }
@@ -333,6 +349,8 @@ export default class WaterTank {
         proc = child_process.spawn(this.#usonicBinary, [this.#triggerPin, this.#echoPin]);
       } catch (error) {
         this?.log?.debug?.('Failed to start usonic measurement for tank uuid "%s": %s', this.uuid, String(error));
+
+        this.#usonicBinary = undefined;
         finish(undefined);
         return;
       }

@@ -24,7 +24,7 @@
 // - Scheduling via Eve Home (Aqua)
 // - Integrate Apple WeatherKit for weather-aware irrigation
 //
-// Code version: 2026.05.04
+// Code version: 2026.05.05
 // Mark Hulskamp
 'use strict';
 
@@ -342,6 +342,7 @@ if (config.options.webUIPort > 0) {
         title: 'Dashboard',
         svg: '<svg viewBox="0 0 24 24"><path d="M4 13h6V4H4z"/><path d="M14 20h6V4h-6z"/><path d="M4 20h6v-3H4z"/></svg>',
         refreshInterval: 1000,
+        trustedHTML: true,
       },
       {
         id: 'zones',
@@ -443,7 +444,7 @@ if (config.options.webUIPort > 0) {
 
 // Setup message listener for set calls from the irrigation system
 // Allows us to set and save back to configuration file
-tempDevice.message(HomeKitDevice.SET, (values = {}) => {
+HomeKitDevice.message(tempDevice.uuid, HomeKitDevice.SET, async (values) => {
   if (values?.zone !== undefined && values?.zone?.uuid !== undefined) {
     // Setting a zone's details. We'll use the enclosed uuid to match into our configuration file
     // We'll also only update details if present

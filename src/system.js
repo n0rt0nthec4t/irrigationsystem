@@ -1367,6 +1367,40 @@ export default class IrrigationSystem extends HomeKitDevice {
         .replaceAll('\'', '&#039;');
     };
 
+    let escapeAttribute = (value) => {
+      return escapeHTML(value).replaceAll('`', '&#096;');
+    };
+
+    let dashboardButton = (className, title, action, payload, content, disabled = false, isBuiltIn = false, target = undefined) => {
+      return (
+        '<button class="' +
+        escapeAttribute(className) +
+        '" title="' +
+        escapeAttribute(title) +
+        '" ' +
+        (isBuiltIn === true
+          ? 'data-action="' + escapeAttribute(action) + '"'
+          : 'data-send-action="' + escapeAttribute(action) + '" data-payload="' + escapeAttribute(JSON.stringify(payload ?? {})) + '"') +
+        (target !== undefined ? ' data-target="' + escapeAttribute(target) + '"' : '') +
+        (disabled === true ? ' disabled' : '') +
+        '>' +
+        content +
+        '</button>'
+      );
+    };
+
+    let collapseButton = (className, target, content) => {
+      return (
+        '<button class="' +
+        escapeAttribute(className) +
+        '" data-action="toggleCollapse" data-target="' +
+        escapeAttribute(target) +
+        '">' +
+        content +
+        '</button>'
+      );
+    };
+
     let formatLastRun = (time) => {
       if (Number.isFinite(Number(time)) !== true) {
         return 'Never run';
@@ -1421,6 +1455,70 @@ export default class IrrigationSystem extends HomeKitDevice {
 
     let bucketIcon = () => {
       return '<svg viewBox="0 0 24 24"><path d="M6 4h12"/><path d="M7 4l1 17h8l1-17"/><path d="M9 9h6"/></svg>';
+    };
+
+    let getWaterUsageDays = (days = 7) => {
+      let usage = [];
+
+      // Create empty day buckets (today - N days)
+      //
+      // Each entry represents a calendar day (midnight → midnight)
+      // and will be populated with total litres used on that day.
+      for (let index = days - 1; index >= 0; index--) {
+        let date = new Date();
+
+        // Normalise to midnight so comparisons are consistent
+        date.setHours(0, 0, 0, 0);
+
+        // Move back N days
+        date.setDate(date.getDate() - index);
+
+        usage.push({
+          date, // Normalised Date object
+          label: date.toLocaleDateString([], { weekday: 'short' }), // e.g. Mon, Tue
+          water: 0, // Accumulated litres for this day
+        });
+      }
+
+      // Iterate through all zones and collect history
+      // We aggregate across ALL zones to produce a system-wide total.
+      Object.values(this.#zones || {}).forEach((zoneData) => {
+        // Pull Eve history entries for this zone (if available)
+        let history =
+          typeof this?.historyService?.getHistory === 'function' && zoneData?.service !== undefined
+            ? this.historyService.getHistory(this.hap.Service.Valve, zoneData.service.subtype)
+            : [];
+
+        // Process each history entry
+        history.forEach((entry) => {
+          // Only consider completed runs (status === 0)
+          // and valid water usage values
+          if (Number(entry?.status) !== 0 || Number.isFinite(Number(entry?.water)) !== true) {
+            return;
+          }
+
+          let time = Number(entry.time);
+
+          // Convert Unix seconds → milliseconds if required
+          if (time < 1000000000000) {
+            time = time * 1000;
+          }
+
+          // Normalise entry time to midnight for grouping
+          let entryDate = new Date(time);
+          entryDate.setHours(0, 0, 0, 0);
+
+          // Match entry to one of our day buckets
+          usage.forEach((day) => {
+            if (day.date.getTime() === entryDate.getTime()) {
+              // Add water usage (litres) to that day
+              day.water = day.water + Number(entry.water);
+            }
+          });
+        });
+      });
+
+      return usage;
     };
 
     // Find active zone and live runtime values.
@@ -1486,16 +1584,13 @@ export default class IrrigationSystem extends HomeKitDevice {
 
       html += '<section class="card dashboard-summary-card ' + (isOn ? 'on' : 'off') + '">';
       html += '<div class="dashboard-summary-content">';
-
-      html +=
-        '<button class="dashboard-power-button" title="' +
-        (isOn ? 'Turn off irrigation system' : 'Turn on irrigation system') +
-        '" onclick="event.stopPropagation(); sendAction(\'power\', { power: ' +
-        (isOn ? 'false' : 'true') +
-        ' })">';
-      html += '<svg viewBox="0 0 24 24"><path d="M12 3v8"/><path d="M6.4 7.6a8 8 0 1 0 11.2 0"/></svg>';
-      html += '</button>';
-
+      html += dashboardButton(
+        'dashboard-power-button',
+        isOn ? 'Turn off irrigation system' : 'Turn on irrigation system',
+        'power',
+        { power: isOn !== true },
+        '<svg viewBox="0 0 24 24"><path d="M12 3v8"/><path d="M6.4 7.6a8 8 0 1 0 11.2 0"/></svg>',
+      );
       html += '<div class="dashboard-card-text">';
       html += '<div class="dashboard-card-heading">System Power</div>';
       html += '<div class="dashboard-card-title">' + (isOn ? 'Enabled' : 'Disabled') + '</div>';
@@ -1561,17 +1656,14 @@ export default class IrrigationSystem extends HomeKitDevice {
 
       html += '<section class="card dashboard-card dashboard-zones-card">';
 
-      html +=
-        '<div class="dashboard-card-header dashboard-zones-header" onclick="event.stopPropagation(); toggleCollapse(\'zones-list\')">';
+      html += '<div class="dashboard-card-header dashboard-zones-header" data-action="toggleCollapse" data-target="zones-list">';
       html += '<div class="dashboard-card-text">';
       html += '<div class="dashboard-card-heading">All Zones</div>';
       html += '<div class="dashboard-card-sub">';
       html += activeZone !== undefined ? escapeHTML(activeZone.name) + ' currently running' : 'Run a zone manually';
       html += '</div>';
       html += '</div>';
-      html += '<button class="dashboard-collapse-toggle" data-collapse="zones-list">';
-      html += '<svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>';
-      html += '</button>';
+      html += collapseButton('dashboard-collapse-toggle', 'zones-list', '<svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>');
       html += '</div>';
 
       html += '<div id="zones-list" class="dashboard-zones-list dashboard-collapse">';
@@ -1654,23 +1746,22 @@ export default class IrrigationSystem extends HomeKitDevice {
         html += '</div>';
 
         if (isRunning === true) {
-          html +=
-            '<button class="dashboard-active-stop" title="Stop active zone" onclick="event.stopPropagation(); sendAction(\'zone\', { uuid: \'' +
-            escapeHTML(zone.uuid) +
-            '\', active: false })">';
-          html += '<span class="stop-icon"></span>';
-          html += 'Stop';
-          html += '</button>';
+          html += dashboardButton(
+            'dashboard-active-stop',
+            'Stop active zone',
+            'zone',
+            { uuid: zone.uuid, active: false },
+            '<span class="stop-icon"></span>Stop',
+          );
         } else {
-          html +=
-            '<button class="dashboard-zone-run" ' +
-            (zone.enabled !== true || this.deviceData.power !== true ? 'disabled ' : '') +
-            'onclick="event.stopPropagation(); sendAction(\'zone\', { uuid: \'' +
-            escapeHTML(zone.uuid) +
-            '\', active: true })">';
-          html += '<span class="run-icon"></span>';
-          html += 'Run';
-          html += '</button>';
+          html += dashboardButton(
+            'dashboard-zone-run',
+            'Run zone',
+            'zone',
+            { uuid: zone.uuid, active: true },
+            '<span class="run-icon"></span>Run',
+            zone.enabled !== true || this.deviceData.power !== true,
+          );
         }
 
         if (isRunning === true) {
@@ -1700,6 +1791,99 @@ export default class IrrigationSystem extends HomeKitDevice {
       return html;
     };
 
+    // Render water usage history card.
+    let renderWaterUsageSection = () => {
+      let renderUsageBody = (days = 7, visible = false) => {
+        let usage = getWaterUsageDays(days);
+        let total = usage.reduce((sum, day) => sum + Number(day.water), 0);
+        let average = usage.length > 0 ? Math.round(total / usage.length) : 0;
+        let maxWater = Math.max(...usage.map((day) => Number(day.water)), 1);
+        let html = '';
+
+        html +=
+          '<div class="dashboard-usage-body" data-visible-group="usage-range" data-visible-value="' +
+          days +
+          '"' +
+          (visible !== true ? ' hidden' : '') +
+          '>';
+
+        html += '<div class="dashboard-usage-chart dashboard-usage-chart-' + days + '">';
+
+        usage.forEach((day, index) => {
+          let water = Math.round(Number(day.water));
+          let height = water > 0 ? Math.max(8, Math.round(Math.pow(water / maxWater, 0.7) * 100)) : 6;
+          let showDate = days !== 30 || index % 5 === 0 || index === usage.length - 1;
+          let dayLabel = days === 30 ? '' : day.label;
+          let dateLabel = showDate === true ? day.date.toLocaleDateString([], { day: 'numeric', month: 'short' }) : '';
+
+          html += '<div class="dashboard-usage-day">';
+          html += '<div class="dashboard-usage-value">' + (water > 0 ? water.toLocaleString() + ' L' : '') + '</div>';
+          html += '<div class="dashboard-usage-bar-wrap">';
+          html +=
+            '<div class="dashboard-usage-bar" title="' +
+            water.toLocaleString() +
+            ' L on ' +
+            escapeAttribute(day.date.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'short' })) +
+            '" style="height:' +
+            height +
+            '%"></div>';
+          html += '</div>';
+          html += '<div class="dashboard-usage-label">' + escapeHTML(dayLabel) + '</div>';
+          html += '<div class="dashboard-usage-date">' + escapeHTML(dateLabel) + '</div>';
+          html += '</div>';
+        });
+
+        html += '</div>';
+
+        html += '<div class="dashboard-usage-footer">';
+        html += '<div class="dashboard-usage-total">';
+        html += waterIcon();
+        html += '<div>';
+        html += '<div class="dashboard-usage-footer-label">Total (' + days + ' days)</div>';
+        html += '<div class="dashboard-usage-footer-value">' + Math.round(total).toLocaleString() + ' L</div>';
+        html += '</div>';
+        html += '</div>';
+
+        html += '<div class="dashboard-usage-average">';
+        html += '<svg viewBox="0 0 24 24"><path d="M4 19V5"/><path d="M4 19h16"/><path d="M7 16l4-5 3 3 5-8"/></svg>';
+        html += '<div>';
+        html += '<div class="dashboard-usage-footer-label">Daily average</div>';
+        html += '<div class="dashboard-usage-footer-value">' + average.toLocaleString() + ' L</div>';
+        html += '</div>';
+        html += '</div>';
+        html += '</div>';
+
+        html += '</div>';
+
+        return html;
+      };
+
+      let html = '';
+
+      html += '<section class="card dashboard-card dashboard-usage-card" data-visible-root>';
+      html += '<div class="dashboard-usage-header">';
+      html += '<div>';
+      html += '<div class="dashboard-card-heading">Water Usage</div>';
+      html += '<div class="dashboard-card-sub">Total water used per day</div>';
+      html += '</div>';
+
+      html += '<select class="dashboard-usage-range" data-action="switchVisible" data-target-group="usage-range">';
+      html += '<option value="7" selected>Last 7 days</option>';
+      html += '<option value="14">Last 14 days</option>';
+      html += '<option value="30">Last 30 days</option>';
+      html += '</select>';
+
+      html += '</div>';
+
+      html += renderUsageBody(7, true);
+      html += renderUsageBody(14);
+      html += renderUsageBody(30);
+
+      html += '</section>';
+
+      return html;
+    };
+
     // Render configured water tank cards.
     let renderTankSection = () => {
       let html = '';
@@ -1714,7 +1898,7 @@ export default class IrrigationSystem extends HomeKitDevice {
       Object.values(this.deviceData?.tanks || []).forEach((tankConfig) => {
         let tank = this.#tanks?.[tankConfig.uuid];
         let percentage = Number.isFinite(Number(tank?.percentage)) === true ? Math.round(Number(tank.percentage)) : 0;
-        let fillHeight = percentage === 0 ? 2 : percentage;
+        let fillHeight = percentage === 0 ? 2 : Math.round(Math.pow(percentage / 100, 0.8) * 100);
         let emptyClass = percentage === 0 ? ' tank-empty' : '';
         let capacity = Number.isFinite(Number(tankConfig?.capacity)) === true ? Number(tankConfig.capacity) : 0;
         let litres = Math.round((capacity * percentage) / 100);
@@ -2107,6 +2291,196 @@ export default class IrrigationSystem extends HomeKitDevice {
   height: 100%;
   background: var(--accent);
 }
+  
+/* Water usage */
+.irrigation-dashboard .dashboard-usage-card {
+  max-width: 620px;
+}
+
+.irrigation-dashboard .dashboard-usage-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 22px;
+}
+
+.irrigation-dashboard .dashboard-usage-body[hidden] {
+  display: none;
+}
+
+.irrigation-dashboard .dashboard-usage-range {
+  height: 34px;
+  padding: 0 34px 0 12px;
+  border: 1px solid rgba(0,0,0,0.12);
+  border-radius: 8px;
+  background: var(--card, #fff);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.irrigation-dashboard .dashboard-usage-chart {
+  height: 210px;
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 14px;
+  align-items: end;
+  padding: 16px 0 8px;
+  border-bottom: 1px solid rgba(0,0,0,0.1);
+}
+
+.irrigation-dashboard .dashboard-usage-chart-14 {
+  grid-template-columns: repeat(14, 1fr);
+  gap: 8px;
+}
+
+.irrigation-dashboard .dashboard-usage-chart-30 {
+  grid-template-columns: repeat(30, 1fr);
+  gap: 5px;
+}
+
+.irrigation-dashboard .dashboard-usage-day {
+  height: 100%;
+  display: grid;
+  grid-template-rows: 22px 1fr auto auto;
+  gap: 6px;
+  text-align: center;
+  min-width: 0;
+}
+
+.irrigation-dashboard .dashboard-usage-value {
+  color: #0f6fe8;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+  margin-bottom: 4px;
+  height: 18px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.irrigation-dashboard .dashboard-usage-bar-wrap {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  min-height: 0;
+}
+
+.irrigation-dashboard .dashboard-usage-bar {
+  width: 34px;
+  min-height: 6px;
+  border-radius: 5px 5px 0 0;
+  background: linear-gradient(180deg, #60a5fa 0%, #2563eb 100%);
+  box-shadow: 0 4px 10px rgba(37,99,235,0.18);
+  opacity: 0.9;
+}
+
+.irrigation-dashboard .dashboard-usage-chart-14 .dashboard-usage-bar {
+  width: 24px;
+}
+
+.irrigation-dashboard .dashboard-usage-chart-30 .dashboard-usage-day {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: center;
+  text-align: center;
+  min-width: 0;
+}
+
+.irrigation-dashboard .dashboard-usage-chart-30 .dashboard-usage-bar-wrap {
+  flex: 1;
+  width: 100%;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.irrigation-dashboard .dashboard-usage-chart-30 .dashboard-usage-bar {
+  width: 16px;
+  border-radius: 4px 4px 0 0;
+}
+
+.irrigation-dashboard .dashboard-usage-bar:hover {
+  filter: brightness(1.1);
+}
+
+.irrigation-dashboard .dashboard-usage-day:last-child .dashboard-usage-bar {
+  box-shadow: 0 0 0 1px rgba(37,99,235,0.15);
+}
+
+.irrigation-dashboard .dashboard-usage-label {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.irrigation-dashboard .dashboard-usage-date {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.irrigation-dashboard .dashboard-usage-chart-14 .dashboard-usage-label {
+  font-size: 11px;
+}
+
+.irrigation-dashboard .dashboard-usage-chart-14 .dashboard-usage-date {
+  font-size: 10px;
+}
+
+.irrigation-dashboard .dashboard-usage-chart-30 .dashboard-usage-value,
+.irrigation-dashboard .dashboard-usage-chart-30 .dashboard-usage-label {
+  display: none;
+}
+
+.irrigation-dashboard .dashboard-usage-chart-30 .dashboard-usage-date {
+  min-height: 14px;
+  color: var(--muted);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.irrigation-dashboard .dashboard-usage-footer {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+  padding-top: 18px;
+}
+
+.irrigation-dashboard .dashboard-usage-total,
+.irrigation-dashboard .dashboard-usage-average {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.irrigation-dashboard .dashboard-usage-average {
+  padding-left: 22px;
+  border-left: 1px solid rgba(0,0,0,0.08);
+}
+
+.irrigation-dashboard .dashboard-usage-footer svg {
+  width: 26px;
+  height: 26px;
+  color: #0f6fe8;
+  stroke-width: 2.2;
+  flex-shrink: 0;
+}
+
+.irrigation-dashboard .dashboard-usage-footer-label {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.irrigation-dashboard .dashboard-usage-footer-value {
+  margin-top: 3px;
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 700;
+}
 
 /* Water tanks */
 .irrigation-dashboard .dashboard-tank-card {
@@ -2165,24 +2539,25 @@ export default class IrrigationSystem extends HomeKitDevice {
 
 .irrigation-dashboard .tank-graphic {
   position: relative;
-  width: 80px;
-  height: 98px;
+  width: 92px;
+  height: 118px;
   border: 2px solid #94a3b8;
-  border-radius: 50% / 14%;
+  border-radius: 50% / 12%;
   overflow: hidden;
   background: linear-gradient(180deg, #f8fafc 0%, #eef2f7 100%);
-  box-shadow: inset 0 0 12px rgba(0, 0, 0, 0.08);
 }
 
 .irrigation-dashboard .tank-graphic::before {
   content: '';
   position: absolute;
-  inset: -2px -2px auto -2px;
-  height: 26px;
+  left: -2px;
+  right: -2px;
+  top: -2px;
+  height: 22px;
   border: 2px solid #94a3b8;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.55);
-  z-index: 3;
+  background: rgba(255, 255, 255, 0.72);
+  z-index: 4;
 }
 
 .irrigation-dashboard .tank-fill {
@@ -2190,7 +2565,7 @@ export default class IrrigationSystem extends HomeKitDevice {
   left: 0;
   right: 0;
   bottom: 0;
-  background: linear-gradient(180deg, #93c5fd 0%, #2563eb 100%);
+  background: linear-gradient(180deg, #93c5fd 0%, #3b82f6 60%, #1d4ed8 100%);
   transition: height 0.4s ease;
 }
 
@@ -2202,12 +2577,12 @@ export default class IrrigationSystem extends HomeKitDevice {
 .irrigation-dashboard .tank-fill::before {
   content: '';
   position: absolute;
-  left: -5%;
-  right: -5%;
-  top: -7px;
-  height: 14px;
+  left: -4%;
+  right: -4%;
+  top: -8px;
+  height: 16px;
   border-radius: 50%;
-  background: rgba(147, 197, 253, 0.85);
+  background: rgba(147, 197, 253, 0.6);
 }
 
 .irrigation-dashboard .tank-shine {
@@ -2268,6 +2643,27 @@ export default class IrrigationSystem extends HomeKitDevice {
   .irrigation-dashboard .dashboard-zone-active-details {
     padding-left: 0;
   }
+
+  .irrigation-dashboard .dashboard-usage-card {
+    max-width: 920px;
+  }
+
+  .irrigation-dashboard .dashboard-usage-chart {
+    gap: 8px;
+  }
+
+  .irrigation-dashboard .dashboard-usage-bar {
+    width: 24px;
+  }
+
+  .irrigation-dashboard .dashboard-usage-footer {
+    grid-template-columns: 1fr;
+  }
+
+  .irrigation-dashboard .dashboard-usage-average {
+    padding-left: 0;
+    border-left: 0;
+  }
 }
 `;
 
@@ -2278,6 +2674,7 @@ export default class IrrigationSystem extends HomeKitDevice {
 
     html += renderSummaryCard();
     html += renderZonesSection();
+    html += renderWaterUsageSection();
     html += renderTankSection();
 
     html += '</section>';
