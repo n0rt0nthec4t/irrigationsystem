@@ -24,7 +24,7 @@
 // - Scheduling via Eve Home (Aqua)
 // - Integrate Apple WeatherKit for weather-aware irrigation
 //
-// Code version: 2026.05.05
+// Code version: 2026.05.07
 // Mark Hulskamp
 'use strict';
 
@@ -60,7 +60,7 @@ import { crc32 } from './utils.js';
 const { version } = createRequire(import.meta.url)('../package.json'); // Import the package.json file to get the version number
 const __dirname = path.dirname(fileURLToPath(import.meta.url)); // Make a defined for JS __dirname
 const ACCESSORY_PINCODE = '031-45-154'; // Default HomeKit pairing code
-const CONFIGURATION_FILE = 'IrrigationSystem_config.json'; // Default configuration file name
+const CONFIGURATION_FILE = 'irrigationsystem_config.json'; // Default configuration file name
 const CONFIG_SCHEMA_FILE = path.join(__dirname, './config.schema.json');
 
 // General helper functions
@@ -106,6 +106,7 @@ function loadConfiguration(filename) {
         debug: false,
         hkPairingCode: ACCESSORY_PINCODE,
         webUIPort: 0,
+        webUIBearerToken: '',
       },
     };
 
@@ -266,7 +267,7 @@ function loadConfiguration(filename) {
 log.success(HomeKitDevice.PLUGIN_NAME + ' v' + version + ' (HAP v' + HAP.HAPLibraryVersion() + ') (Node v' + process.versions.node + ')');
 
 // Check to see if a configuration file was passed into use and validate if present
-let configurationFile = path.resolve(__dirname, CONFIGURATION_FILE);
+let configurationFile = path.resolve(process.cwd(), CONFIGURATION_FILE);
 let argFile = process.argv[2];
 if (typeof argFile === 'string') {
   configurationFile = path.isAbsolute(argFile) ? argFile : path.resolve(process.cwd(), argFile);
@@ -330,7 +331,12 @@ if (config.options.webUIPort > 0) {
   ui = new HomeKitUI({
     name: 'Irrigation System',
     version,
+    host: '0.0.0.0',
     port: config.options.webUIPort,
+    auth: {
+      enabled: typeof config.options.webUIBearerToken === 'string' && config.options.webUIBearerToken !== '',
+      bearerToken: config.options.webUIBearerToken,
+    },
     configFile: configurationFile,
     schemaFile: CONFIG_SCHEMA_FILE,
     accessory,

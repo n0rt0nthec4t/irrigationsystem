@@ -71,7 +71,7 @@ WaterTank.GPIO = GPIO;
 
 export default class IrrigationSystem extends HomeKitDevice {
   static TYPE = 'IrrigationSystem';
-  static VERSION = '2026.05.04';
+  static VERSION = '2026.05.05';
 
   irrigationService = undefined; // HomeKit service for this irrigation system
   leakSensorService = undefined; // HomeKit service for a "leak" sensor
@@ -210,6 +210,10 @@ export default class IrrigationSystem extends HomeKitDevice {
   }
 
   async onMessage(type, message = {}) {
+    if (typeof type !== 'string' || type === '') {
+      return;
+    }
+
     if (type === WaterTank.WATERLEVEL_EVENT) {
       this.#handleWaterLevelEvent(message);
     }

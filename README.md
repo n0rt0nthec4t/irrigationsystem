@@ -37,14 +37,42 @@ This project includes a built-in web interface powered by `HomeKitUI`.
 - System options
 - Live log streaming
 - HomeKit pairing management
+- Configuration backup/restore
+- Optional bearer-token authentication
 
 ### Access
 
+```txt
 http://<device-ip>:8582
+```
 
 Port is configurable via:
 
+```json
 options.webUIPort
+```
+
+### Authentication
+
+HomeKitUI supports optional bearer-token authentication.
+
+When configured:
+
+- API access requires a bearer token
+- Browser UI stores the token locally after first authentication
+- Live log streaming remains supported via secure SSE token fallback
+
+Example:
+
+```json
+"webUIBearerToken": "your-secret-token"
+```
+
+To disable authentication:
+
+```json
+"webUIBearerToken": ""
+```
 
 ### Dashboard
 
@@ -53,13 +81,15 @@ Displays:
 - Water tank levels (percentage + litres)
 - Tank capacity
 - Last updated readings
+- Zone runtime state
+- Water usage information
 
 Tank data is updated automatically from sensor events.
 
 ### Notes
 
 - Fully self-contained UI (no external frontend)
-- Config changes require restart
+- Config changes may require restart
 - Log sources (priority):
   1. journald (systemd)
   2. log file (if configured)
@@ -87,7 +117,7 @@ As the system is installed externally, mains wiring (240v → 24v transformer) i
 
 ## Water Tank Configuration
 
-Defined in IrrigationSystem_config.json under tanks.
+Defined in `IrrigationSystem_config.json` under `tanks`.
 
 Example:
 
@@ -105,16 +135,16 @@ Example:
 ]
 ```
 
-| Name           | Description |
-|----------------|-------------|
-| name           | Tank name |
-| enabled        | Enable/disable tank |
-| capacity       | Tank capacity (litres) |
-| minimumLevel   | Minimum measurable level (mm) |
-| sensorEchoPin  | GPIO echo pin |
-| sensorTrigPin  | GPIO trigger pin |
-| sensorHeight   | Sensor height above tank base (mm) |
-| uuid           | Auto-generated (DO NOT CHANGE) |
+| Name | Description |
+|------|-------------|
+| `name` | Tank name |
+| `enabled` | Enable/disable tank |
+| `capacity` | Tank capacity (litres) |
+| `minimumLevel` | Minimum measurable level (mm) |
+| `sensorEchoPin` | GPIO echo pin |
+| `sensorTrigPin` | GPIO trigger pin |
+| `sensorHeight` | Sensor height above tank base (mm) |
+| `uuid` | Auto-generated (DO NOT CHANGE) |
 
 ### Tank Behaviour
 
@@ -132,7 +162,7 @@ Example:
 
 ## Irrigation Zone Configuration
 
-Defined in zones.
+Defined in `zones`.
 
 ```json
 "zones": [
@@ -145,55 +175,60 @@ Defined in zones.
 ]
 ```
 
-| Name      | Description |
-|-----------|-------------|
-| name      | Zone name |
-| enabled   | Enable/disable zone |
-| relayPin  | GPIO relay control |
-| runtime   | Default runtime (seconds) |
-| uuid      | Auto-generated |
+| Name | Description |
+|------|-------------|
+| `name` | Zone name |
+| `enabled` | Enable/disable zone |
+| `relayPin` | GPIO relay control pin or array of pins |
+| `runtime` | Default runtime (seconds) |
+| `uuid` | Auto-generated |
 
 ---
 
 ## Configuration Options
 
-Defined under options.
+Defined under `options`.
 
-| Name           | Description | Default |
-|----------------|-------------|--------|
-| debug          | Enable debug logging | false |
-| elevation      | Height above sea level | 0 |
-| eveHistory     | Enable EveHome history | true |
-| flowRate       | Flow sensor rate (L/min @1Hz) | — |
-| latitude       | Location latitude | 0 |
-| longitude      | Location longitude | 0 |
-| leakSensor     | Enable leak sensor | false |
-| powerSwitch    | Virtual power switch | false |
-| maxRuntime     | Max zone runtime (seconds) | 7200 |
-| sensorFlowPin  | Flow sensor GPIO | — |
-| usonicBinary   | Path to ultrasonic measurement binary (supports relative paths and `~`) | `./usonic_measure` |
-| waterLeakAlert | Trigger HomeKit alert | false |
-| webUIPort      | HomeKitUI port | 8581 |
+| Name | Description | Default |
+|------|-------------|---------|
+| `debug` | Enable debug logging | `false` |
+| `elevation` | Height above sea level | `0` |
+| `eveHistory` | Enable EveHome history | `true` |
+| `flowRate` | Flow sensor rate (L/min @1Hz) | — |
+| `latitude` | Location latitude | `0` |
+| `longitude` | Location longitude | `0` |
+| `leakSensor` | Enable leak sensor | `false` |
+| `powerSwitch` | Virtual power switch | `false` |
+| `maxRuntime` | Maximum zone runtime (seconds) | `7200` |
+| `sensorFlowPin` | Flow sensor GPIO | — |
+| `usonicBinary` | Path to ultrasonic measurement binary | `./usonic_measure` |
+| `waterLeakAlert` | Trigger HomeKit alert | `false` |
+| `webUIPort` | HomeKitUI port | `8581` |
+| `webUIBearerToken` | Optional HomeKitUI bearer token | `""` |
 
 ---
 
 ## Ultrasonic Water Level Measurement
 
-Includes usonic_measure.c for sensor readings.
+Includes `usonic_measure.c` for accurate ultrasonic sensor timing.
 
 Requires:
 
+```bash
 sudo apt install wiringPi
+```
 
 Compile:
 
-gcc -o dist/usonic_measure usonic_measure.c -l wiringPi
+```bash
+gcc -o dist/usonic_measure src/usonic_measure.c -l wiringPi
+```
 
 Sensor used:
 
 - JSN-SR04T
-- Min distance: ~200mm
-- Max distance: ~4500mm
+- Minimum distance: ~200mm
+- Maximum distance: ~4500mm
 
 ---
 
@@ -203,9 +238,11 @@ Exposes:
 
 - IrrigationSystem service
 - Valve services (zones)
-- Optional:
-  - Leak sensor
-  - Power switch
+
+Optional services:
+
+- Leak sensor
+- Power switch
 
 Supports:
 
