@@ -2,7 +2,7 @@
     "name": "irrigationsystem",
     "displayName": "Irrigation System",
     "type": "module",
-    "version": "0.0.1",
+    "version": "0.0.2",
     "description": "HomeKit irrigation system using HAP-NodeJS library",
     "author": "n0rt0nthec4t",
     "license": "Apache-2.0",

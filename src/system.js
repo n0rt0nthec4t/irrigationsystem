@@ -89,8 +89,8 @@ export default class IrrigationSystem extends HomeKitDevice {
   #lastFlowTime = 0; // Last time water flowed
   #unassignedWaterUsed = 0; // Track water
 
-  constructor(accessory, api, log, deviceData) {
-    super(accessory, api, log, deviceData);
+  constructor(accessory, api, deviceData) {
+    super(accessory, api, deviceData);
 
     // Fix 'mis-named' characteristic option until changed in hap-nodejs based code (v1.1.x has fix)
     if (this?.hap?.Characteristic?.ProgramMode?.PROGRAM_SCHEDULED_MANUAL_MODE_ !== undefined) {
@@ -105,7 +105,7 @@ export default class IrrigationSystem extends HomeKitDevice {
   // Class functions
   onAdd() {
     // Create / get primary irrigation system service and register message handler
-    this.irrigationService = this.addHKService(this.hap.Service.IrrigationSystem, '', 1, {
+    this.irrigationService = this.addService(this.hap.Service.IrrigationSystem, '', 1, {
       messages: this.message.bind(this),
     });
     this.irrigationService.setPrimaryService();
@@ -117,7 +117,7 @@ export default class IrrigationSystem extends HomeKitDevice {
     );
 
     // Active characteristic (system on/off)
-    this.addHKCharacteristic(this.irrigationService, this.hap.Characteristic.Active, {
+    this.addCharacteristic(this.irrigationService, this.hap.Characteristic.Active, {
       onSet: (value) => {
         this.#processActiveCharacteristic(this.irrigationService, value, 'system');
       },
@@ -769,7 +769,7 @@ export default class IrrigationSystem extends HomeKitDevice {
     this.irrigationService.updateCharacteristic(this.hap.Characteristic.WaterLevel, totalPercentage);
 
     // Log water level history against the WaterLevel characteristic type.
-    this.history(this.hap.Characteristic.WaterLevel, { time: Math.floor(Date.now() / 1000), level: totalPercentage }, 600);
+    this.history(this.irrigationService, { time: Math.floor(Date.now() / 1000), level: totalPercentage }, { timegap: 600 });
   }
 
   #handleFlowEvent(message = {}) {
@@ -976,13 +976,13 @@ export default class IrrigationSystem extends HomeKitDevice {
   #setupPowerSwitch(deviceData = {}, atStart = false) {
     if (deviceData?.powerSwitch === true) {
       if (this.switchService === undefined) {
-        this.switchService = this.addHKService(this.hap.Service.Switch, '', 1);
+        this.switchService = this.addService(this.hap.Service.Switch, '', 1);
 
         // HomeKit service name.
-        this.addHKCharacteristic(this.switchService, this.hap.Characteristic.Name);
+        this.addCharacteristic(this.switchService, this.hap.Characteristic.Name);
         this.switchService.updateCharacteristic(this.hap.Characteristic.Name, '');
 
-        this.addHKCharacteristic(this.switchService, this.hap.Characteristic.On, {
+        this.addCharacteristic(this.switchService, this.hap.Characteristic.On, {
           onSet: (value) => {
             if (value !== this.deviceData.power) {
               this.setPower(value);
@@ -1006,7 +1006,7 @@ export default class IrrigationSystem extends HomeKitDevice {
 
     // Remove if no longer configured.
     if (this.switchService !== undefined) {
-      this.accessory.removeService(this.switchService);
+      this.removeService(this.switchService);
       this.switchService = undefined;
 
       if (atStart === false) {
@@ -1047,7 +1047,7 @@ export default class IrrigationSystem extends HomeKitDevice {
 
     // Add / update active tanks
     activeTanks.forEach((tank) => {
-      this.addHKCharacteristic(this.irrigationService, this.hap.Characteristic.WaterLevel);
+      this.addCharacteristic(this.irrigationService, this.hap.Characteristic.WaterLevel);
 
       if (this.#tanks?.[tank.uuid] === undefined) {
         this.#tanks[tank.uuid] = {
@@ -1082,7 +1082,7 @@ export default class IrrigationSystem extends HomeKitDevice {
 
     if (Object.keys(this.#tanks).length === 0) {
       if (this.irrigationService.testCharacteristic(this.hap.Characteristic.WaterLevel) === true) {
-        this.irrigationService.removeCharacteristic(this.hap.Characteristic.WaterLevel);
+        this.removeCharacteristic(this.irrigationService, this.hap.Characteristic.WaterLevel);
       }
     }
   }
@@ -1120,7 +1120,7 @@ export default class IrrigationSystem extends HomeKitDevice {
         });
 
         if (exists === false) {
-          this.accessory.removeService(service);
+          this.removeService(service);
         }
       });
 
@@ -1154,41 +1154,41 @@ export default class IrrigationSystem extends HomeKitDevice {
       }
 
       let uuidHash = crc32(zone.uuid.toUpperCase());
-      let service = this.addHKService(this.hap.Service.Valve, zone.name, uuidHash);
+      let service = this.addService(this.hap.Service.Valve, zone.name, uuidHash);
 
       // Create new internal zone state if needed.
       if (this.#zones?.[zone.uuid] === undefined) {
         // HomeKit service name.
-        this.addHKCharacteristic(service, this.hap.Characteristic.Name);
+        this.addCharacteristic(service, this.hap.Characteristic.Name);
         service.updateCharacteristic(this.hap.Characteristic.Name, zone.name);
 
         // Enable / disable zone.
-        this.addHKCharacteristic(service, this.hap.Characteristic.IsConfigured, {
+        this.addCharacteristic(service, this.hap.Characteristic.IsConfigured, {
           onSet: (value) => this.setZoneEnabled(zone, value),
           onGet: () =>
             zone.enabled === true ? this.hap.Characteristic.IsConfigured.CONFIGURED : this.hap.Characteristic.IsConfigured.NOT_CONFIGURED,
         });
 
         // Remaining duration.
-        this.addHKCharacteristic(service, this.hap.Characteristic.RemainingDuration, {
+        this.addCharacteristic(service, this.hap.Characteristic.RemainingDuration, {
           props: { maxValue: this.deviceData.maxRuntime },
         });
 
         // Runtime.
-        this.addHKCharacteristic(service, this.hap.Characteristic.SetDuration, {
+        this.addCharacteristic(service, this.hap.Characteristic.SetDuration, {
           onSet: (value) => this.setZoneRuntime(zone, value),
           onGet: () => zone.runtime,
           props: { maxValue: this.deviceData.maxRuntime },
         });
 
         // Zone name.
-        this.addHKCharacteristic(service, this.hap.Characteristic.ConfiguredName, {
+        this.addCharacteristic(service, this.hap.Characteristic.ConfiguredName, {
           onSet: (value) => this.setZoneName(zone, value),
           onGet: () => zone.name,
         });
 
         // Active state.
-        this.addHKCharacteristic(service, this.hap.Characteristic.Active, {
+        this.addCharacteristic(service, this.hap.Characteristic.Active, {
           onSet: (value) => this.#processActiveCharacteristic(zone, value, 'valve'),
           onGet: () =>
             this.#zones?.[zone.uuid]?.run !== undefined ? this.hap.Characteristic.Active.ACTIVE : this.hap.Characteristic.Active.INACTIVE,
@@ -1196,12 +1196,12 @@ export default class IrrigationSystem extends HomeKitDevice {
 
         // Identifier is stable for the lifetime of this HomeKit service.
         // Set once only when the service is first created.
-        this.addHKCharacteristic(service, this.hap.Characteristic.Identifier);
+        this.addCharacteristic(service, this.hap.Characteristic.Identifier);
         service.updateCharacteristic(this.hap.Characteristic.Identifier, uuidHash);
 
         // ServiceLabelIndex is stable for the lifetime of this HomeKit service.
         // Set once only when the service is first created.
-        this.addHKCharacteristic(service, this.hap.Characteristic.ServiceLabelIndex, {
+        this.addCharacteristic(service, this.hap.Characteristic.ServiceLabelIndex, {
           onGet: () => index + 1,
         });
         service.updateCharacteristic(this.hap.Characteristic.ServiceLabelIndex, index + 1);
@@ -1330,7 +1330,7 @@ export default class IrrigationSystem extends HomeKitDevice {
     // This function should be called AFTER flow sensor setup
     if (this.#flowSensor !== undefined && deviceData.leakSensor === true) {
       if (this.leakSensorService === undefined) {
-        this.leakSensorService = this.addHKService(this.hap.Service.LeakSensor, '', 1, {});
+        this.leakSensorService = this.addService(this.hap.Service.LeakSensor, '', 1, {});
         if (atStart === false) {
           this?.log?.info?.('Leak sensor', deviceData.waterLeakAlert === true ? 'with alerting' : '');
         }
@@ -1348,7 +1348,7 @@ export default class IrrigationSystem extends HomeKitDevice {
 
     // Leak sensor is no longer configured, so remove the HomeKit service.
     if (this.leakSensorService !== undefined) {
-      this.accessory.removeService(this.leakSensorService);
+      this.removeService(this.leakSensorService);
       this.leakSensorService = undefined;
       this.leakDetected = false;
 

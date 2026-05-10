@@ -171,6 +171,13 @@
           "maximum": 65535,
           "default": 0,
           "restartRequired": true
+        },
+        "webUIBearerToken": {
+          "type": "string",
+          "title": "Web UI Password",
+          "format": "password",
+          "default": "",
+          "restartRequired": true
         }
       }
     }

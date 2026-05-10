@@ -2,6 +2,33 @@
 
 All notable changes to `irrigationsystem` will be documented in this file. This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.0.2 (2026/05/10)
+
+### Added
+- Added optional Web UI password support via `options.webUIBearerToken`
+- Added a styled HomeKitUI authentication prompt with optional browser persistence
+
+### Changed
+- Updated irrigation system code for the latest `HomeKitDevice` API:
+  - Uses `HomeKitDevice.LOGGER` instead of passing the logger through the device constructor
+  - Uses `addService()` / `addCharacteristic()` helper names
+  - Uses `removeService()` / `removeCharacteristic()` helper methods
+- Improved HomeKitUI authentication flow:
+  - Blocks the main UI until authentication succeeds
+  - Shows a dedicated authentication-required screen if authentication is cancelled
+  - Prevents duplicate auth prompts when multiple API requests fail at once
+- Updated user-facing authentication wording from bearer token to Web UI password
+
+### Fixed
+- Fixed HomeKitUI config saves preserving an existing Web UI password when the masked password field is left unchanged
+- Fixed HomeKitUI prompt submission behaviour for both button click and Enter key
+- Fixed authenticated runtime polling and log streaming continuing after authentication is cancelled
+- Fixed water-level history calls to use the newer `history()` options object
+
+## v0.0.1 (2026/05/07)
+
+- Initial non-alpha released version
+
 ## v0.0.1-alpha.9 (2026/05/05)
 
 ### Added

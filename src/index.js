@@ -24,7 +24,7 @@
 // - Scheduling via Eve Home (Aqua)
 // - Integrate Apple WeatherKit for weather-aware irrigation
 //
-// Code version: 2026.05.07
+// Code version: 2026.05.10
 // Mark Hulskamp
 'use strict';
 
@@ -53,6 +53,8 @@ import HomeKitUI from './HomeKitUI.js';
 
 import Logger from './logger.js';
 const log = Logger.withPrefix(HomeKitDevice.PLATFORM_NAME);
+
+HomeKitDevice.LOGGER = log; // Setup a reference to our logger for use in our HomeKitDevice module
 
 import { crc32 } from './utils.js';
 
@@ -239,6 +241,7 @@ function loadConfiguration(filename) {
           Number.isFinite(Number(value?.webUIPort)) === true && Number(value.webUIPort) > 0 && Number(value.webUIPort) <= 65535
             ? Number(value.webUIPort)
             : 0;
+        config.options.webUIBearerToken = typeof value?.webUIBearerToken === 'string' ? value.webUIBearerToken.trim() : '';
       }
     });
 
@@ -322,7 +325,7 @@ let deviceData = {
   programs: config.programs,
 };
 
-let tempDevice = new IrrigationSystem(undefined, HAP, log, deviceData);
+let tempDevice = new IrrigationSystem(undefined, HAP, deviceData);
 let accessory = await tempDevice.add('Irrigation System', HAP.Categories.SPRINKLER, true);
 
 // Start HomeKit Web UI if configured to do so
