@@ -71,7 +71,7 @@ WaterTank.GPIO = GPIO;
 
 export default class IrrigationSystem extends HomeKitDevice {
   static TYPE = 'IrrigationSystem';
-  static VERSION = '2026.05.05';
+  static VERSION = '2026.05.13';
 
   irrigationService = undefined; // HomeKit service for this irrigation system
   leakSensorService = undefined; // HomeKit service for a "leak" sensor
@@ -458,15 +458,29 @@ export default class IrrigationSystem extends HomeKitDevice {
       (typeof value !== 'boolean' &&
         value !== this.hap.Characteristic.Active.ACTIVE &&
         value !== this.hap.Characteristic.Active.INACTIVE) ||
-      typeof this.#zones?.[zone?.uuid] !== 'object' ||
-      zone?.enabled !== true
+      typeof this.#zones?.[zone?.uuid] !== 'object'
     ) {
       return;
     }
 
     let zoneData = this.#zones[zone.uuid];
+    let currentZone = this.deviceData?.zones?.find((item) => item?.uuid === zone.uuid);
+    let activeZone = currentZone ?? zoneData.config ?? zone;
+    let wantsStart = value === this.hap.Characteristic.Active.ACTIVE || value === true;
+    let wantsStop = value === this.hap.Characteristic.Active.INACTIVE || value === false;
+    let zoneEnabled = activeZone?.enabled === true;
 
-    if (this.deviceData.power === true && (value === this.hap.Characteristic.Active.ACTIVE || value === true)) {
+    if (wantsStart === true && zoneEnabled !== true) {
+      this?.log?.warn?.('Ignored request to start disabled zone "%s"', activeZone.name);
+
+      zoneData.service.updateCharacteristic(this.hap.Characteristic.Active, this.hap.Characteristic.Active.INACTIVE);
+      zoneData.service.updateCharacteristic(this.hap.Characteristic.InUse, this.hap.Characteristic.InUse.NOT_IN_USE);
+      zoneData.service.updateCharacteristic(this.hap.Characteristic.RemainingDuration, 0);
+
+      return;
+    }
+
+    if (this.deviceData.power === true && wantsStart === true) {
       // Request to turn on sprinkler and the irrigation system is powered on.
 
       // Already running -> ignore duplicate start
@@ -519,7 +533,7 @@ export default class IrrigationSystem extends HomeKitDevice {
         duration: 0,
       });
 
-      this?.log?.info?.('Zone "%s" was turned "on"', zone.name);
+      this?.log?.info?.('Zone "%s" was turned "on"', activeZone.name);
 
       // Update HomeKit BEFORE opening valves
       zoneData.service.updateCharacteristic(this.hap.Characteristic.Active, this.hap.Characteristic.Active.ACTIVE);
@@ -540,7 +554,7 @@ export default class IrrigationSystem extends HomeKitDevice {
       return;
     }
 
-    if (this.deviceData.power === false && (value === this.hap.Characteristic.Active.ACTIVE || value === true)) {
+    if (this.deviceData.power === false && wantsStart === true) {
       // Request to turn on sprinkler while irrigation system is powered off.
       setTimeout(() => {
         zoneData.run = undefined;
@@ -555,7 +569,7 @@ export default class IrrigationSystem extends HomeKitDevice {
       return;
     }
 
-    if (value === this.hap.Characteristic.Active.INACTIVE || value === false) {
+    if (wantsStop === true) {
       // Request to turn off sprinkler.
       zoneData.endTime = undefined;
       zoneData.activeValveIndex = 0;
@@ -568,18 +582,27 @@ export default class IrrigationSystem extends HomeKitDevice {
 
       // Safety fallback
       setTimeout(() => {
-        if (zoneData.run !== undefined) {
-          let anyOpen = zoneData.valves.some((v) => v.isOpen() === true);
-
-          if (anyOpen === false) {
-            // force cleanup
-            zoneData.run = undefined;
-
-            zoneData.service.updateCharacteristic(this.hap.Characteristic.Active, this.hap.Characteristic.Active.INACTIVE);
-            zoneData.service.updateCharacteristic(this.hap.Characteristic.InUse, this.hap.Characteristic.InUse.NOT_IN_USE);
-            zoneData.service.updateCharacteristic(this.hap.Characteristic.RemainingDuration, 0);
-          }
+        if (zoneData.run === undefined) {
+          return;
         }
+
+        let anyOpen = zoneData.valves.some((v) => v.isOpen() === true);
+
+        if (anyOpen === true) {
+          this?.log?.warn?.('Zone "%s" did not report all valves closed after stop request; forcing HomeKit state idle', activeZone.name);
+        }
+
+        // If the valve close event did not complete cleanup, end the logical run
+        // so continued flow is treated as unexpected/leak flow instead of watering.
+        zoneData.run = undefined;
+        zoneData.endTime = undefined;
+        zoneData.activeValveIndex = 0;
+
+        this.#flowSensor?.markExpectedFlow?.(false);
+
+        zoneData.service.updateCharacteristic(this.hap.Characteristic.Active, this.hap.Characteristic.Active.INACTIVE);
+        zoneData.service.updateCharacteristic(this.hap.Characteristic.InUse, this.hap.Characteristic.InUse.NOT_IN_USE);
+        zoneData.service.updateCharacteristic(this.hap.Characteristic.RemainingDuration, 0);
       }, 2000);
     }
   }
@@ -882,6 +905,19 @@ export default class IrrigationSystem extends HomeKitDevice {
     let zoneData = this.#zones[associatedZone.uuid];
 
     if (message.status === Valve.OPENED) {
+      if (zoneData.run === undefined && associatedZone?.enabled !== true) {
+        let openedValve = zoneData.valves.find((valve) => valve?.uuid === message.uuid);
+
+        this?.log?.warn?.('Closing disabled zone "%s" after unexpected valve open event', associatedZone.name);
+        openedValve?.close?.();
+
+        zoneData.service.updateCharacteristic(this.hap.Characteristic.Active, this.hap.Characteristic.Active.INACTIVE);
+        zoneData.service.updateCharacteristic(this.hap.Characteristic.InUse, this.hap.Characteristic.InUse.NOT_IN_USE);
+        zoneData.service.updateCharacteristic(this.hap.Characteristic.RemainingDuration, 0);
+
+        return;
+      }
+
       // First valve opening starts the run.
       // Timed runs are normally created by setZoneActive() before the valve is opened.
       // If no run exists here, treat it as a manual/physical valve activation fallback.
@@ -1231,6 +1267,10 @@ export default class IrrigationSystem extends HomeKitDevice {
       }
 
       let zoneData = this.#zones[zone.uuid];
+
+      if (zone.enabled !== true && zoneData.run !== undefined) {
+        this.setZoneActive(zone, this.hap.Characteristic.Active.INACTIVE);
+      }
 
       // Relay layout changes require rebuilding the valve objects.
       if (JSON.stringify(zoneData.config?.relayPin) !== JSON.stringify(zone.relayPin)) {

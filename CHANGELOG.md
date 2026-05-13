@@ -2,6 +2,14 @@
 
 All notable changes to `irrigationsystem` will be documented in this file. This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.0.3 (2026/05/13)
+
+### Fixed
+- Fixed disabled zones being able to start from stale HomeKit automation/config callback state after Web UI changes
+- Fixed disabled running zones being unable to stop from the Web UI or HomeKit
+- Fixed unexpected valve-open events for disabled zones leaving HomeKit state active instead of forcing the valve closed and returning idle
+- Fixed Web UI zone disable changes so an already-running zone is stopped immediately when the updated config is applied
+
 ## v0.0.2 (2026/05/10)
 
 ### Added

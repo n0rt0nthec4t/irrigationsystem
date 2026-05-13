@@ -2,7 +2,7 @@
     "name": "irrigationsystem",
     "displayName": "Irrigation System",
     "type": "module",
-    "version": "0.0.2",
+    "version": "0.0.3",
     "description": "HomeKit irrigation system using HAP-NodeJS library",
     "author": "n0rt0nthec4t",
     "license": "Apache-2.0",
@@ -24,7 +24,7 @@
     "main": "dist/index.js",
     "engines": {
         "node": "^22 || ^24",
-        "hap-nodejs": "^2.1.5"
+        "hap-nodejs": "^2.1.6"
     },
     "files": [
         "LICENSE",
@@ -52,7 +52,7 @@
         "rimraf": "^6.1.3"
     },
     "dependencies": {
-        "@homebridge/hap-nodejs": "^2.1.5",
+        "@homebridge/hap-nodejs": "^2.1.6",
         "express": "^5.2.1",
         "qrcode": "^1.5.4",
         "ansi_up": "^6.0.6",
