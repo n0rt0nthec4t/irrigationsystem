@@ -25,13 +25,14 @@
 // - GPIO library must be assigned to FlowSensor.GPIO before use
 // - Valid GPIO pin required
 //
-// Code version 2026.05.03
+// Code version 2026.05.27
 // Mark Hulskamp
 'use strict';
 
 // Define nodejs module requirements
 import crypto from 'node:crypto';
 import { setInterval, clearInterval } from 'node:timers';
+import { performance } from 'node:perf_hooks';
 
 // Import our modules
 import HomeKitDevice from './HomeKitDevice.js';
@@ -51,6 +52,8 @@ export default class FlowSensor {
   #sensorPin = undefined;
   #targets = new Set();
   #pulseCounter = 0;
+  #lastPulseTime = 0;
+  #minimumPulseGap = 20; // ms
   #flowBuffer = [];
   #lastFlowTime = Date.now();
   #flowRate = 0;
@@ -92,6 +95,7 @@ export default class FlowSensor {
         // Reset runtime state before attaching to the new pin.
         this.#sensorPin = undefined;
         this.#pulseCounter = 0;
+        this.#lastPulseTime = 0;
         this.#flowBuffer = [];
         this.#flowData = [];
         this.#lastFlowTime = Date.now();
@@ -116,7 +120,7 @@ export default class FlowSensor {
 
         if (newRate !== sensor.#flowRate) {
           this?.log?.debug?.(
-            'Updating flow rate calibration for sensor on pin "%s" from "%s" to "%s" litres/pulse',
+            'Updating flow rate calibration for sensor on pin "%s" from "%s" to "%s" L/min @ 1Hz',
             this.#sensorPin,
             sensor.#flowRate,
             newRate,
@@ -187,6 +191,7 @@ export default class FlowSensor {
 
     sensor.#sensorPin = undefined;
     sensor.#pulseCounter = 0;
+    sensor.#lastPulseTime = 0;
     sensor.#flowBuffer = [];
     sensor.#flowData = [];
     sensor.#lastExpectedFlowTime = 0;
@@ -300,6 +305,13 @@ export default class FlowSensor {
     FlowSensor.GPIO.poll(
       this.#sensorPin,
       () => {
+        let now = performance.now();
+
+        if (now - this.#lastPulseTime < this.#minimumPulseGap) {
+          return;
+        }
+
+        this.#lastPulseTime = now;
         this.#pulseCounter++;
       },
       FlowSensor.GPIO.POLL_HIGH,

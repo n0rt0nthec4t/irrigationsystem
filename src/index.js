@@ -379,6 +379,8 @@ if (config.options.webUIPort > 0) {
 
       // Tanks changed
       if (JSON.stringify(config.tanks) !== JSON.stringify(newConfig.tanks)) {
+        log.debug?.('Tank configuration updated from Web UI');
+
         await HomeKitDevice.message(accessory.UUID, HomeKitDevice.UPDATE, {
           tanks: newConfig.tanks,
         });
@@ -386,6 +388,8 @@ if (config.options.webUIPort > 0) {
 
       // Zones changed
       if (JSON.stringify(config.zones) !== JSON.stringify(newConfig.zones)) {
+        log.debug?.('Zone configuration updated from Web UI');
+
         await HomeKitDevice.message(accessory.UUID, HomeKitDevice.UPDATE, {
           zones: newConfig.zones,
         });
@@ -393,6 +397,8 @@ if (config.options.webUIPort > 0) {
 
       // Options changed
       if (JSON.stringify(config.options) !== JSON.stringify(newConfig.options)) {
+        log.debug?.('Options configuration updated from Web UI');
+        
         await HomeKitDevice.message(accessory.UUID, HomeKitDevice.UPDATE, {
           eveHistory: newConfig.options.eveHistory,
           elevation: newConfig.options.elevation,
@@ -419,6 +425,7 @@ if (config.options.webUIPort > 0) {
       }
 
       config = newConfig;
+      log.debug?.('Configuration updated');
     },
     onRestart: async () => {
       await shutdown('restart', 1);
