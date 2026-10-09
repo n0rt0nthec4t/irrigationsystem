@@ -2,6 +2,46 @@
 
 All notable changes to `irrigationsystem` will be documented in this file. This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.0.7 (2026/10/09)
+
+### Changed
+
+- Water usage charts now use linear bar heights, hide zero-use bars, and retain fractional litre totals and averages
+- Clarified that historical water usage covers completed zone runs
+
+### Fixed
+
+- Fixed dashboard refresh remaining paused after a dropdown or button retained focus
+- Fixed short flow bursts being lost and usage samples being delayed by median volume filtering
+- Fixed missing tank measurements being shown as empty and added explicit stale-reading status
+- Fixed tank litres being calculated from rounded percentages
+- Fixed delayed cleanup from earlier zone requests clearing a later run while leaving its valve open
+- Fixed stale HomeKit zone callbacks updating replaced configuration objects
+- Fixed empty relay lists and invalid GPIO values being interpreted as GPIO 0
+- Fixed pending flow pulses being lost at shutdown or assigned to the next zone
+- Fixed corrected tank dimensions failing to start periodic sensor polling
+- Fixed usable tank levels including the sensor blind zone as water above the minimum level
+- Fixed tank history being submitted against the wrong HomeKit UUID
+- Fixed verification scripts referencing the wrong test directory and added built-controller regression coverage
+
+### Dependency Updates
+
+- Updated `@homebridge/hap-nodejs` from `2.2.2` to `2.2.3`
+- Updated `chalk` from `6.0.0` to `6.0.1`
+- Updated `HomeKitDevice` from `2026.08.18` to `2026.10.05`
+- Updated `HomeKitHistory` from `2026.08.10` to `2026.09.22`
+- Updated `HomeKitUI` from `2026.05.07` to `2026.10.09` with the dashboard refresh fix
+- Updated `@types/node` from `26.2.0` to `26.6.4`
+- Updated `@typescript-eslint/parser` from `8.67.0` to `8.71.1`
+- Updated `eslint` from `10.8.1` to `10.12.0`
+- Updated `prettier` from `3.9.6` to `3.9.9`
+- Updated `prettier-eslint` from `17.1.1` to `17.1.2`
+
+### Documentation
+
+- Documented tank freshness, completed-run water usage, and flow calibration in `README.md`
+- Added development setup and verification commands following the Daikin and Denon projects
+
 ## v0.0.6 (2026/08/20)
 
 ### Changed
@@ -9,6 +49,10 @@ All notable changes to `irrigationsystem` will be documented in this file. This 
 - Updated `HomeKitHistory` to the 2026/08/10 release for HAP-NodeJS 2.2 storage compatibility
 - Updated HAP-NodeJS to 2.2.2 and Chalk to 6.0.0
 - Updated development dependencies to their latest releases
+
+### Fixed
+- Fixed invalid ultrasonic readings beyond the configured tank height being displayed as an empty tank
+- Fixed incomplete ultrasonic samples replacing the last valid water level with a noisy reading
 
 ## v0.0.5 (2026/06/26)
 

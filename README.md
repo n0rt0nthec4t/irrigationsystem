@@ -84,7 +84,11 @@ Displays:
 - Zone runtime state
 - Water usage information
 
-Tank data is updated automatically from sensor events.
+Tank measurements are taken every minute and the dashboard refreshes automatically. Tanks without a valid measurement show **No reading**; measurements older than five minutes show **Stale reading**. Tank litres are estimated from the configured capacity and measured usable-height percentage.
+
+Water usage charts cover completed zone runs over the last 7, 14, or 30 calendar days. Ongoing runs and unassigned flow are excluded. A run is recorded on the day it finishes, and the daily average includes zero-use days. Bars use a linear scale, with no bar for zero usage.
+
+Usage is calculated from accepted flow-sensor pulses. `options.flowRate` is the flow rate in litres per minute at 1 Hz, so each pulse represents `flowRate / 60` litres. Verify this calibration against a measured volume. Previously undercounted usage cannot be reconstructed from saved run totals.
 
 ### Notes
 
@@ -150,9 +154,10 @@ Example:
 
 - Ultrasonic sensor measures water distance
 - Readings are smoothed internally
-- Percentage is calculated from:
-  - sensor height
-  - minimum usable level
+- Usable water height is `sensorHeight - distance - minimumLevel`, clamped to zero
+- Full usable height is `sensorHeight - minimumLevel - 200`, accounting for the sensor's 200 mm blind zone
+- `capacity` represents usable litres between those empty/full points; tank geometry makes the litre display an estimate
+- Correcting initially invalid dimensions starts automatic polling without a restart
 - Dashboard displays:
   - % full
   - litres remaining
@@ -249,6 +254,22 @@ Supports:
 - Siri control
 - EveHome advanced features
 - History logging
+
+---
+
+## Development
+
+The shared `HomeKitDevice`, `HomeKitHistory`, and `HomeKitUI` modules are Git submodules. Clone with submodules, or initialise them after cloning:
+
+```sh
+git submodule update --init --recursive
+npm install
+npm run check
+```
+
+Requires Node.js 22 or 24. The regression tests cover valve lifecycle and HomeKit configuration changes through the built controller, flow accounting at zone boundaries, GPIO configuration, ultrasonic measurements, water usage charts, and dashboard refresh behaviour. GPIO, clocks, measurement processes, browser APIs, and persistence are mocked; HAP services use the real library. The test command also runs the shared device and history suites.
+
+Run `npm test` for the regression suite, `npm run lint` for source checks, or `npm run build` to refresh `dist`. Hardware measurements and flow calibration should also be checked on the Raspberry Pi.
 
 ---
 

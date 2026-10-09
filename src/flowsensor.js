@@ -8,7 +8,7 @@
 // Responsibilities:
 // - Monitor GPIO pulse input for flow sensors
 // - Calculate flow rate and volume
-// - Apply smoothing via rolling buffer
+// - Preserve pulse-derived volume for usage accounting
 // - Emit FLOW_EVENT via HomeKitDevice message bus
 // - Perform leak detection and emit LEAK_EVENT
 //
@@ -25,7 +25,7 @@
 // - GPIO library must be assigned to FlowSensor.GPIO before use
 // - Valid GPIO pin required
 //
-// Code version 2026.05.27
+// Code version 2026.10.09
 // Mark Hulskamp
 'use strict';
 
@@ -54,7 +54,6 @@ export default class FlowSensor {
   #pulseCounter = 0;
   #lastPulseTime = 0;
   #minimumPulseGap = 20; // ms
-  #flowBuffer = [];
   #lastFlowTime = Date.now();
   #flowRate = 0;
   #timer = undefined;
@@ -96,7 +95,6 @@ export default class FlowSensor {
         this.#sensorPin = undefined;
         this.#pulseCounter = 0;
         this.#lastPulseTime = 0;
-        this.#flowBuffer = [];
         this.#flowData = [];
         this.#lastFlowTime = Date.now();
         this.#lastExpectedFlowTime = 0;
@@ -109,7 +107,7 @@ export default class FlowSensor {
 
     // Updates must be applied to the owner instance for this GPIO pin.
     // If this instance attached to an existing sensor, the owner holds the timer,
-    // flow buffer, pulse counter, leak state, and registered targets.
+    // pulse counter, leak state, and registered targets.
     let sensor = FlowSensor.#sensors[this.#sensorPin] ?? this;
 
     // Flow rate calibration can be safely changed live.
@@ -192,7 +190,6 @@ export default class FlowSensor {
     sensor.#sensorPin = undefined;
     sensor.#pulseCounter = 0;
     sensor.#lastPulseTime = 0;
-    sensor.#flowBuffer = [];
     sensor.#flowData = [];
     sensor.#lastExpectedFlowTime = 0;
     sensor.#leakDetected = false;
@@ -326,55 +323,34 @@ export default class FlowSensor {
     FlowSensor.#sensors[this.#sensorPin] = this;
   }
 
-  #processFlow() {
-    // Calculate elapsed time since last processing cycle
-    // Used to convert pulse counts into rate/volume
+  /**
+   * Consume pending pulses synchronously at a zone boundary without broadcasting.
+   * The caller must account for the returned sample before starting/ending a run.
+   *
+   * @returns {{uuid: string, pin: number, time: number, rate: number, volume: number}|undefined}
+   *   Measured interval volume in litres and rate in L/min, or undefined when detached.
+   */
+  flush() {
+    let sensor = FlowSensor.#sensors[this.#sensorPin];
+    return sensor === undefined ? undefined : sensor.#takeFlowSample();
+  }
+
+  #takeFlowSample() {
     let now = Date.now();
-    let interval = now - this.#lastFlowTime;
-
-    // Ignore invalid or zero intervals (protects against timing glitches)
-    if (interval <= 0) {
-      return;
-    }
-
-    // Update last processed timestamp
+    let interval = Math.max(0, now - this.#lastFlowTime);
     this.#lastFlowTime = now;
 
-    // Convert pulse count into flow rate (L/min)
-    // flowRate factor represents litres per pulse calibration
-    let flowRate = (this.#pulseCounter / (interval / 1000)) * this.#flowRate;
-
-    // Convert flow rate into actual volume over this interval (litres)
-    let flowVolume = flowRate * (interval / 60000);
-
-    // Reset pulse counter for next cycle
+    // Count each accepted pulse exactly once, including boundaries in the same
+    // millisecond. A zero-length interval has volume but no meaningful flow rate.
+    let volume = (this.#pulseCounter * this.#flowRate) / 60;
+    let rate = interval > 0 ? (this.#pulseCounter / (interval / 1000)) * this.#flowRate : 0;
     this.#pulseCounter = 0;
 
-    // Add volume sample to smoothing buffer
-    // This helps reduce noise/spikes from sensor jitter
-    this.#flowBuffer.push(flowVolume);
+    return { uuid: this.uuid, pin: this.#sensorPin, time: now, rate, volume };
+  }
 
-    // Maintain fixed buffer size (rolling window)
-    if (this.#flowBuffer.length > 5) {
-      this.#flowBuffer.shift();
-    }
-
-    // Median smoothing (robust against spikes)
-    let sorted = [...this.#flowBuffer].sort((a, b) => a - b);
-    let middle = Math.floor(sorted.length / 2);
-
-    // Calculate smoothed volume (median of recent samples)
-    let smoothedVolume = sorted.length % 2 !== 0 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
-
-    // Build flow event payload
-    // Includes raw rate and smoothed volume for downstream consumers
-    let flowMessage = {
-      uuid: this.uuid,
-      pin: this.#sensorPin,
-      time: now,
-      rate: flowRate,
-      volume: smoothedVolume,
-    };
+  #processFlow() {
+    let flowMessage = this.#takeFlowSample();
 
     // Emit flow event to all registered targets
     this.#targets.forEach((uuid) => {

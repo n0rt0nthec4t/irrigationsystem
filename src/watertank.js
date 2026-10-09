@@ -31,7 +31,7 @@
 // - Valid trigger/echo GPIO pins
 // - External ultrasonic binary, or assigned WaterTank.GPIO library fallback
 //
-// Code version 2026.06.26
+// Code version 2026.10.09
 // Mark Hulskamp
 'use strict';
 
@@ -50,6 +50,7 @@ import { validGPIOPin, LOG_LEVELS } from './utils.js';
 
 // Define constants
 const USONIC_READINGS = 5; // Number of readings per sensor sample
+const USONIC_MIN_VALID_READINGS = Math.ceil(USONIC_READINGS / 2); // Require a valid majority
 const USONIC_MIN_RANGE = 200; // mm
 const USONIC_MAX_RANGE = 4500; // mm
 const USONIC_TIMEOUT = 5000; // ms
@@ -131,7 +132,7 @@ export default class WaterTank {
     }
 
     // Validate tank dimensions
-    if (this.#sensorHeight === undefined || this.#sensorHeight - this.#minimumLevel <= 0) {
+    if (this.#sensorHeight === undefined || this.#sensorHeight - this.#minimumLevel - USONIC_MIN_RANGE <= 0) {
       this?.log?.error?.('Invalid tank dimensions for tank uuid "%s"', this.uuid);
       return;
     }
@@ -144,13 +145,7 @@ export default class WaterTank {
       this.uuid,
     );
 
-    // Initial read
-    this.#readUsonicSensor();
-
-    // Start polling loop
-    this.#readTimer = setInterval(() => {
-      this.#readUsonicSensor();
-    }, REFRESH_INTERVAL);
+    this.#startPolling();
   }
 
   onUpdate(deviceData = {}) {
@@ -183,11 +178,22 @@ export default class WaterTank {
       return;
     }
 
-    if (this.#sensorHeight === undefined || this.#sensorHeight - this.#minimumLevel <= 0) {
+    if (this.#sensorHeight === undefined || this.#sensorHeight - this.#minimumLevel - USONIC_MIN_RANGE <= 0) {
       this?.log?.error?.('Invalid tank dimensions for tank uuid "%s"', this.uuid);
       return;
     }
 
+    this.#startPolling();
+  }
+
+  // Configuration can become valid after construction. Start exactly one timer
+  // and retry immediately whenever valid dimensions or pins are applied.
+  #startPolling() {
+    if (this.#readTimer === undefined) {
+      this.#readTimer = setInterval(() => {
+        this.#readUsonicSensor();
+      }, REFRESH_INTERVAL);
+    }
     this.#readUsonicSensor();
   }
 
@@ -230,12 +236,22 @@ export default class WaterTank {
       for (let i = 0; i < USONIC_READINGS; i++) {
         let reading = await this.#readDistance();
 
-        if (Number.isFinite(Number(reading)) === true && Number(reading) > 0) {
+        // A distance beyond the configured sensor height is outside the physical
+        // tank and must not be converted into a valid empty-tank reading.
+        if (Number.isFinite(Number(reading)) === true && Number(reading) > 0 && Number(reading) <= this.#sensorHeight) {
           readings.push(Number(reading));
         }
       }
 
-      if (readings.length === 0) {
+      // Keep the last valid level unless a majority of this sample succeeded.
+      // This prevents one or two noisy echoes from replacing it with a false value.
+      if (readings.length < USONIC_MIN_VALID_READINGS) {
+        this?.log?.debug?.(
+          'Ignoring ultrasonic sample for tank uuid "%s": received "%s" valid readings from "%s"',
+          this.uuid,
+          readings.length,
+          USONIC_READINGS,
+        );
         return;
       }
 
@@ -244,11 +260,7 @@ export default class WaterTank {
 
       distance = Math.max(USONIC_MIN_RANGE, Math.min(USONIC_MAX_RANGE, distance));
 
-      if (distance > this.#sensorHeight) {
-        distance = this.#sensorHeight;
-      }
-
-      let usableHeight = this.#sensorHeight - this.#minimumLevel;
+      let usableHeight = this.#sensorHeight - this.#minimumLevel - USONIC_MIN_RANGE;
 
       if (usableHeight <= 0) {
         return;
@@ -256,7 +268,9 @@ export default class WaterTank {
 
       // Distance is measured from the sensor down to the water surface.
       // Convert to usable water height, clamped between empty and full.
-      this.waterlevel = usableHeight - Math.max(0, distance - USONIC_MIN_RANGE);
+      // The bottom reserve and the sensor blind zone are different limits.
+      // Empty usable volume starts at minimumLevel; full is 200 mm below the sensor.
+      this.waterlevel = this.#sensorHeight - distance - this.#minimumLevel;
       this.waterlevel = Math.max(0, Math.min(usableHeight, this.waterlevel));
 
       this.percentage = (this.waterlevel / usableHeight) * 100;

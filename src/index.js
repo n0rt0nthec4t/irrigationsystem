@@ -24,7 +24,7 @@
 // - Scheduling via Eve Home (Aqua)
 // - Integrate Apple WeatherKit for weather-aware irrigation
 //
-// Code version: 2026.05.10
+// Code version: 2026.10.09
 // Mark Hulskamp
 'use strict';
 
@@ -56,7 +56,7 @@ const log = Logger.withPrefix(HomeKitDevice.PLATFORM_NAME);
 
 HomeKitDevice.LOGGER = log; // Setup a reference to our logger for use in our HomeKitDevice module
 
-import { crc32 } from './utils.js';
+import { crc32, validGPIOPin } from './utils.js';
 
 // Define constants
 const { version } = createRequire(import.meta.url)('../package.json'); // Import the package.json file to get the version number
@@ -143,17 +143,11 @@ function loadConfiguration(filename) {
             enabled: tank?.enabled === true,
             capacity: Number.isFinite(Number(tank?.capacity)) === true && Number(tank.capacity) > 0 ? Number(tank.capacity) : 0,
             sensorTrigPin:
-              Number.isFinite(Number(tank?.sensorTrigPin)) === true &&
-              Number.isFinite(Number(tank?.sensorEchoPin)) === true &&
-              Number(tank.sensorTrigPin) >= 0 &&
-              Number(tank.sensorTrigPin) <= 26
+              validGPIOPin(tank?.sensorTrigPin) === true && validGPIOPin(tank?.sensorEchoPin) === true
                 ? Number(tank.sensorTrigPin)
                 : undefined,
             sensorEchoPin:
-              Number.isFinite(Number(tank?.sensorEchoPin)) === true &&
-              Number.isFinite(Number(tank?.sensorTrigPin)) === true &&
-              Number(tank.sensorEchoPin) >= 0 &&
-              Number(tank.sensorEchoPin) <= 26
+              validGPIOPin(tank?.sensorEchoPin) === true && validGPIOPin(tank?.sensorTrigPin) === true
                 ? Number(tank.sensorEchoPin)
                 : undefined,
             sensorHeight:
@@ -183,17 +177,14 @@ function loadConfiguration(filename) {
                 : 'Zone ' + unnamedCount++,
             enabled: zone?.enabled === true,
             runtime: Number.isFinite(Number(zone?.runtime)) === true ? Number(zone.runtime) : 300, // 5mins by default
-            relayPin:
-              Number.isFinite(Number(zone?.relayPin)) === true && Number(zone.relayPin) >= 0 && Number(zone.relayPin) <= 26
-                ? Number(zone.relayPin)
-                : undefined,
+            relayPin: Array.isArray(zone?.relayPin) === false && validGPIOPin(zone?.relayPin) === true ? Number(zone.relayPin) : undefined,
           };
 
           if (tempZone.relayPin === undefined && Array.isArray(zone?.relayPin) === true) {
             // Since multiple relay pins, we'll assume a relaypin group. validate it though
             tempZone.relayPin = [];
             zone.relayPin.forEach((pin) => {
-              if (Number.isFinite(Number(pin)) === true && Number(pin) >= 0 && Number(pin) <= 26) {
+              if (validGPIOPin(pin) === true) {
                 tempZone.relayPin.push(Number(pin));
               }
             });
@@ -212,10 +203,7 @@ function loadConfiguration(filename) {
       if (key === 'options' && value !== null && Array.isArray(value) === false && typeof value === 'object') {
         config.options.leakSensor = value?.leakSensor === true;
         config.options.waterLeakAlert = value?.waterLeakAlert === true;
-        config.options.sensorFlowPin =
-          Number.isFinite(Number(value?.sensorFlowPin)) === true && Number(value.sensorFlowPin) >= 0 && Number(value.sensorFlowPin) <= 26
-            ? Number(value.sensorFlowPin)
-            : undefined;
+        config.options.sensorFlowPin = validGPIOPin(value?.sensorFlowPin) === true ? Number(value.sensorFlowPin) : undefined;
         config.options.flowRate = Number.isFinite(Number(value?.flowRate)) === true ? Number(value.flowRate) : 0.0;
         config.options.maxRuntime =
           Number.isFinite(Number(value?.maxRuntime)) === true && Number(value.maxRuntime) > 0 ? Number(value.maxRuntime) : 7200;

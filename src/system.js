@@ -57,7 +57,7 @@ import HomeKitDevice from './HomeKitDevice.js';
 import WaterTank from './watertank.js';
 import Valve from './valve.js';
 import FlowSensor from './flowsensor.js';
-import { crc32 } from './utils.js';
+import { crc32, validGPIOPin } from './utils.js';
 
 // Define constants
 const WATER_LEAK_TIMEOUT = 10000; // Milliseconds after a water valve is closed before we can report on any water leak
@@ -71,7 +71,7 @@ WaterTank.GPIO = GPIO;
 
 export default class IrrigationSystem extends HomeKitDevice {
   static TYPE = 'IrrigationSystem';
-  static VERSION = '2026.05.13';
+  static VERSION = '2026.10.09';
 
   irrigationService = undefined; // HomeKit service for this irrigation system
   leakSensorService = undefined; // HomeKit service for a "leak" sensor
@@ -365,6 +365,8 @@ export default class IrrigationSystem extends HomeKitDevice {
       return;
     }
 
+    zone = this.#getZoneConfig(zone);
+
     // Normalise name (trim whitespace)
     let name = value.trim();
 
@@ -401,6 +403,8 @@ export default class IrrigationSystem extends HomeKitDevice {
       return;
     }
 
+    zone = this.#getZoneConfig(zone);
+
     // Normalise incoming value to a boolean for internal use
     let enabled = value === true || value === this.hap.Characteristic.IsConfigured.CONFIGURED;
 
@@ -422,6 +426,8 @@ export default class IrrigationSystem extends HomeKitDevice {
     // Persist internal enabled state
     zone.enabled = enabled;
 
+    this.#zones[zone.uuid].config.enabled = enabled;
+
     // Reflect the new state back into HomeKit
     this.#zones[zone.uuid].service.updateCharacteristic(
       this.hap.Characteristic.IsConfigured,
@@ -437,6 +443,8 @@ export default class IrrigationSystem extends HomeKitDevice {
       return;
     }
 
+    zone = this.#getZoneConfig(zone);
+
     // Clamp runtime to configured maximum before storing or reflecting it.
     let runtime = Math.min(Number(value), this.deviceData.maxRuntime);
 
@@ -445,11 +453,42 @@ export default class IrrigationSystem extends HomeKitDevice {
     // Persist internal runtime.
     zone.runtime = runtime;
 
+    this.#zones[zone.uuid].config.runtime = runtime;
+
     // Reflect updated runtime in HomeKit.
     this.#zones[zone.uuid].service.updateCharacteristic(this.hap.Characteristic.SetDuration, runtime);
 
     // Save updated current configuration.
     this.set({ zone: zone });
+  }
+
+  // HomeKit handlers retain their registration arguments across config replacements.
+  // Resolve the live configuration by UUID before reading or changing zone settings.
+  #getZoneConfig(zone) {
+    return this.deviceData?.zones?.find((item) => item?.uuid === zone?.uuid) ?? this.#zones?.[zone?.uuid]?.config ?? zone;
+  }
+
+  // Drain the sensor synchronously so pulses cannot move into a later zone or be
+  // discarded when the current run is removed before the next 1 Hz sensor tick.
+  #flushFlow() {
+    let sample = this.#flowSensor?.flush?.();
+    if (sample !== undefined) {
+      this.#handleFlowEvent(sample);
+    }
+  }
+
+  // Preserve supervision if a GPIO close fails; other valves must still be closed.
+  #closeZoneValves(zone, zoneData) {
+    zoneData.valves.forEach((valve) => {
+      if (valve.isOpen() === true) {
+        try {
+          valve.close();
+        } catch (error) {
+          this?.log?.warn?.('Unable to close a valve for zone "%s": %s', zone.name, String(error));
+        }
+      }
+    });
+    return zoneData.valves.every((valve) => valve.isOpen() === false);
   }
 
   setZoneActive(zone, value) {
@@ -503,7 +542,13 @@ export default class IrrigationSystem extends HomeKitDevice {
             this.setZoneActive(activeZone, this.hap.Characteristic.Active.INACTIVE);
           }
         }
+        // Do not open a second zone when the preceding valve failed to close.
+        if (runningZone[1].run !== undefined) {
+          return;
+        }
       }
+
+      this.#flushFlow();
 
       // Reset sequencing state
       zoneData.activeValveIndex = 0;
@@ -557,10 +602,10 @@ export default class IrrigationSystem extends HomeKitDevice {
     if (this.deviceData.power === false && wantsStart === true) {
       // Request to turn on sprinkler while irrigation system is powered off.
       setTimeout(() => {
-        zoneData.run = undefined;
-        zoneData.endTime = undefined;
-        zoneData.activeValveIndex = 0;
-
+        // A rejected request must never clear a later accepted run.
+        if (this.deviceData.power !== false || zoneData.run !== undefined) {
+          return;
+        }
         zoneData.service.updateCharacteristic(this.hap.Characteristic.Active, this.hap.Characteristic.Active.INACTIVE);
         zoneData.service.updateCharacteristic(this.hap.Characteristic.InUse, this.hap.Characteristic.InUse.NOT_IN_USE);
         zoneData.service.updateCharacteristic(this.hap.Characteristic.RemainingDuration, 0);
@@ -570,39 +615,36 @@ export default class IrrigationSystem extends HomeKitDevice {
     }
 
     if (wantsStop === true) {
+      // Capture this run before valve-close events can finish it synchronously.
+      let stoppingRun = zoneData.run;
+      this.#flushFlow();
+
       // Request to turn off sprinkler.
       zoneData.endTime = undefined;
       zoneData.activeValveIndex = 0;
 
-      zoneData.valves.forEach((valve) => {
-        if (valve.isOpen() === true) {
-          valve.close();
-        }
-      });
+      if (this.#closeZoneValves(activeZone, zoneData) === false) {
+        // The central 1 Hz timer will keep trying until the relay closes.
+        zoneData.endTime = Date.now();
+      }
 
-      // Safety fallback
+      // Delayed recovery belongs only to the run that requested this stop.
       setTimeout(() => {
-        if (zoneData.run === undefined) {
+        if (stoppingRun === undefined || zoneData.run !== stoppingRun) {
           return;
         }
 
-        let anyOpen = zoneData.valves.some((v) => v.isOpen() === true);
-
-        if (anyOpen === true) {
-          this?.log?.warn?.('Zone "%s" did not report all valves closed after stop request; forcing HomeKit state idle', activeZone.name);
+        let closed = this.#closeZoneValves(activeZone, zoneData);
+        if (zoneData.run !== stoppingRun) {
+          return;
         }
-
-        // If the valve close event did not complete cleanup, end the logical run
-        // so continued flow is treated as unexpected/leak flow instead of watering.
-        zoneData.run = undefined;
-        zoneData.endTime = undefined;
-        zoneData.activeValveIndex = 0;
-
-        this.#flowSensor?.markExpectedFlow?.(false);
-
-        zoneData.service.updateCharacteristic(this.hap.Characteristic.Active, this.hap.Characteristic.Active.INACTIVE);
-        zoneData.service.updateCharacteristic(this.hap.Characteristic.InUse, this.hap.Characteristic.InUse.NOT_IN_USE);
-        zoneData.service.updateCharacteristic(this.hap.Characteristic.RemainingDuration, 0);
+        if (closed === false) {
+          // Keep runtime supervision active while a valve still needs closing.
+          zoneData.endTime = Date.now();
+          this?.log?.warn?.('Zone "%s" still has an open valve; retrying shutdown', activeZone.name);
+          return;
+        }
+        this.#completeZoneRun(activeZone, zoneData, Date.now());
       }, 2000);
     }
   }
@@ -792,7 +834,11 @@ export default class IrrigationSystem extends HomeKitDevice {
     this.irrigationService.updateCharacteristic(this.hap.Characteristic.WaterLevel, totalPercentage);
 
     // Log water level history against the WaterLevel characteristic type.
-    this.history(this.irrigationService, { time: Math.floor(Date.now() / 1000), level: totalPercentage }, { timegap: 600 });
+    this.history(
+      this.irrigationService.getCharacteristic(this.hap.Characteristic.WaterLevel),
+      { time: Math.floor(Date.now() / 1000), level: totalPercentage },
+      { timegap: 600 },
+    );
   }
 
   #handleFlowEvent(message = {}) {
@@ -922,6 +968,8 @@ export default class IrrigationSystem extends HomeKitDevice {
       // Timed runs are normally created by setZoneActive() before the valve is opened.
       // If no run exists here, treat it as a manual/physical valve activation fallback.
       if (zoneData.run === undefined) {
+        this.#flushFlow();
+
         // Determine run type ONLY based on whether a timer exists
         let isTimed = Number.isFinite(Number(zoneData.endTime)) === true;
 
@@ -969,44 +1017,50 @@ export default class IrrigationSystem extends HomeKitDevice {
         return;
       }
 
-      let totalDuration = Math.max(0, Number(message.time) - Number(zoneData.run.startTime)) / 1000;
-      let totalWater = zoneData.run.waterUsed;
-
-      // Format duration (mm:ss)
-      let minutes = Math.floor(totalDuration / 60);
-      let seconds = Math.floor(totalDuration % 60);
-      let durationText = minutes + 'm ' + seconds + 's';
-
-      // Format water (litres)
-      let waterText =
-        Number.isFinite(Number(totalWater)) === true && totalWater > 0 ? Math.round(totalWater).toLocaleString() + 'L' : undefined;
-
-      this.history(zoneData.service, {
-        time: Math.floor(message.time / 1000),
-        status: 0,
-        water: totalWater,
-        duration: totalDuration,
-      });
-
-      // Enhanced logging
-      this?.log?.info?.(
-        waterText !== undefined ? 'Zone "%s" was turned "off" after %s using %s' : 'Zone "%s" was turned "off" after %s',
-        associatedZone.name,
-        durationText,
-        ...(waterText !== undefined ? [waterText] : []),
-      );
-
-      // Flow is no longer expected, so start leak detection grace window.
-      this.#flowSensor?.markExpectedFlow?.(false);
-
-      zoneData.run = undefined;
-      zoneData.endTime = undefined;
-      zoneData.activeValveIndex = 0;
-
-      zoneData.service.updateCharacteristic(this.hap.Characteristic.Active, this.hap.Characteristic.Active.INACTIVE);
-      zoneData.service.updateCharacteristic(this.hap.Characteristic.InUse, this.hap.Characteristic.InUse.NOT_IN_USE);
-      zoneData.service.updateCharacteristic(this.hap.Characteristic.RemainingDuration, 0);
+      this.#completeZoneRun(associatedZone, zoneData, Number(message.time));
     }
+  }
+
+  // Complete one run after all valves close, preserving the final pulse sample.
+  #completeZoneRun(zone, zoneData, time) {
+    this.#flushFlow();
+    let totalDuration = Math.max(0, Number(time) - Number(zoneData.run.startTime)) / 1000;
+    let totalWater = zoneData.run.waterUsed;
+
+    // Format duration (mm:ss)
+    let minutes = Math.floor(totalDuration / 60);
+    let seconds = Math.floor(totalDuration % 60);
+    let durationText = minutes + 'm ' + seconds + 's';
+
+    // Format water (litres)
+    let waterText =
+      Number.isFinite(Number(totalWater)) === true && totalWater > 0 ? Math.round(totalWater).toLocaleString() + 'L' : undefined;
+
+    this.history(zoneData.service, {
+      time: Math.floor(time / 1000),
+      status: 0,
+      water: totalWater,
+      duration: totalDuration,
+    });
+
+    // Enhanced logging
+    this?.log?.info?.(
+      waterText !== undefined ? 'Zone "%s" was turned "off" after %s using %s' : 'Zone "%s" was turned "off" after %s',
+      zone.name,
+      durationText,
+      ...(waterText !== undefined ? [waterText] : []),
+    );
+
+    // Flow is no longer expected, so start leak detection grace window.
+    this.#flowSensor?.markExpectedFlow?.(false);
+
+    zoneData.run = undefined;
+    zoneData.endTime = undefined;
+    zoneData.activeValveIndex = 0;
+
+    zoneData.service.updateCharacteristic(this.hap.Characteristic.Active, this.hap.Characteristic.Active.INACTIVE);
+    zoneData.service.updateCharacteristic(this.hap.Characteristic.InUse, this.hap.Characteristic.InUse.NOT_IN_USE);
+    zoneData.service.updateCharacteristic(this.hap.Characteristic.RemainingDuration, 0);
   }
 
   #setupPowerSwitch(deviceData = {}, atStart = false) {
@@ -1202,7 +1256,9 @@ export default class IrrigationSystem extends HomeKitDevice {
         this.addCharacteristic(service, this.hap.Characteristic.IsConfigured, {
           onSet: (value) => this.setZoneEnabled(zone, value),
           onGet: () =>
-            zone.enabled === true ? this.hap.Characteristic.IsConfigured.CONFIGURED : this.hap.Characteristic.IsConfigured.NOT_CONFIGURED,
+            this.#getZoneConfig(zone).enabled === true
+              ? this.hap.Characteristic.IsConfigured.CONFIGURED
+              : this.hap.Characteristic.IsConfigured.NOT_CONFIGURED,
         });
 
         // Remaining duration.
@@ -1213,14 +1269,14 @@ export default class IrrigationSystem extends HomeKitDevice {
         // Runtime.
         this.addCharacteristic(service, this.hap.Characteristic.SetDuration, {
           onSet: (value) => this.setZoneRuntime(zone, value),
-          onGet: () => zone.runtime,
+          onGet: () => this.#getZoneConfig(zone).runtime,
           props: { maxValue: this.deviceData.maxRuntime },
         });
 
         // Zone name.
         this.addCharacteristic(service, this.hap.Characteristic.ConfiguredName, {
           onSet: (value) => this.setZoneName(zone, value),
-          onGet: () => zone.name,
+          onGet: () => this.#getZoneConfig(zone).name,
         });
 
         // Active state.
@@ -1287,7 +1343,7 @@ export default class IrrigationSystem extends HomeKitDevice {
         let relayArray = Array.isArray(zone.relayPin) === true ? zone.relayPin : [zone.relayPin];
 
         zoneData.valves = relayArray
-          .filter((relayPin) => Number.isFinite(Number(relayPin)) === true)
+          .filter((relayPin) => validGPIOPin(relayPin) === true)
           .map(
             (relayPin) =>
               new Valve(this.log, this.uuid, {
@@ -1840,7 +1896,7 @@ export default class IrrigationSystem extends HomeKitDevice {
       let renderUsageBody = (days = 7, visible = false) => {
         let usage = getWaterUsageDays(days);
         let total = usage.reduce((sum, day) => sum + Number(day.water), 0);
-        let average = usage.length > 0 ? Math.round(total / usage.length) : 0;
+        let average = usage.length > 0 ? total / usage.length : 0;
         let maxWater = Math.max(...usage.map((day) => Number(day.water)), 1);
         let html = '';
 
@@ -1854,18 +1910,22 @@ export default class IrrigationSystem extends HomeKitDevice {
         html += '<div class="dashboard-usage-chart dashboard-usage-chart-' + days + '">';
 
         usage.forEach((day, index) => {
-          let water = Math.round(Number(day.water));
-          let height = water > 0 ? Math.max(8, Math.round(Math.pow(water / maxWater, 0.7) * 100)) : 6;
+          let water = Number(day.water);
+          // Linear heights preserve relative usage; zero-use days have no blue bar.
+          let height = (water / maxWater) * 100;
           let showDate = days !== 30 || index % 5 === 0 || index === usage.length - 1;
           let dayLabel = days === 30 ? '' : day.label;
           let dateLabel = showDate === true ? day.date.toLocaleDateString([], { day: 'numeric', month: 'short' }) : '';
 
           html += '<div class="dashboard-usage-day">';
-          html += '<div class="dashboard-usage-value">' + (water > 0 ? water.toLocaleString() + ' L' : '') + '</div>';
+          html +=
+            '<div class="dashboard-usage-value">' +
+            (water > 0 ? water.toLocaleString([], { maximumFractionDigits: 2 }) + ' L' : '') +
+            '</div>';
           html += '<div class="dashboard-usage-bar-wrap">';
           html +=
             '<div class="dashboard-usage-bar" title="' +
-            water.toLocaleString() +
+            water.toLocaleString([], { maximumFractionDigits: 2 }) +
             ' L on ' +
             escapeAttribute(day.date.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'short' })) +
             '" style="height:' +
@@ -1884,7 +1944,7 @@ export default class IrrigationSystem extends HomeKitDevice {
         html += waterIcon();
         html += '<div>';
         html += '<div class="dashboard-usage-footer-label">Total (' + days + ' days)</div>';
-        html += '<div class="dashboard-usage-footer-value">' + Math.round(total).toLocaleString() + ' L</div>';
+        html += '<div class="dashboard-usage-footer-value">' + total.toLocaleString([], { maximumFractionDigits: 2 }) + ' L</div>';
         html += '</div>';
         html += '</div>';
 
@@ -1892,7 +1952,7 @@ export default class IrrigationSystem extends HomeKitDevice {
         html += '<svg viewBox="0 0 24 24"><path d="M4 19V5"/><path d="M4 19h16"/><path d="M7 16l4-5 3 3 5-8"/></svg>';
         html += '<div>';
         html += '<div class="dashboard-usage-footer-label">Daily average</div>';
-        html += '<div class="dashboard-usage-footer-value">' + average.toLocaleString() + ' L</div>';
+        html += '<div class="dashboard-usage-footer-value">' + average.toLocaleString([], { maximumFractionDigits: 2 }) + ' L</div>';
         html += '</div>';
         html += '</div>';
         html += '</div>';
@@ -1908,7 +1968,7 @@ export default class IrrigationSystem extends HomeKitDevice {
       html += '<div class="dashboard-usage-header">';
       html += '<div>';
       html += '<div class="dashboard-card-heading">Water Usage</div>';
-      html += '<div class="dashboard-card-sub">Total water used per day</div>';
+      html += '<div class="dashboard-card-sub">Completed zone runs per day</div>';
       html += '</div>';
 
       html += '<select class="dashboard-usage-range" data-action="switchVisible" data-target-group="usage-range">';
@@ -1943,11 +2003,15 @@ export default class IrrigationSystem extends HomeKitDevice {
 
       Object.values(this.deviceData?.tanks || []).forEach((tankConfig) => {
         let tank = this.#tanks?.[tankConfig.uuid];
-        let percentage = Number.isFinite(Number(tank?.percentage)) === true ? Math.round(Number(tank.percentage)) : 0;
-        let fillHeight = percentage === 0 ? 2 : Math.round(Math.pow(percentage / 100, 0.8) * 100);
-        let emptyClass = percentage === 0 ? ' tank-empty' : '';
+        // Keep unavailable measurements distinct from a valid empty tank, and use
+        // the unrounded level for litres so percentage rounding does not lose volume.
+        let hasReading = typeof tank?.percentage === 'number' && Number.isFinite(tank.percentage) === true;
+        let rawPercentage = hasReading === true ? Math.max(0, Math.min(100, tank.percentage)) : undefined;
+        let percentage = hasReading === true ? Math.round(rawPercentage) : undefined;
+        let fillHeight = hasReading === true ? rawPercentage : 0;
+        let emptyClass = hasReading === false || rawPercentage === 0 ? ' tank-empty' : '';
         let capacity = Number.isFinite(Number(tankConfig?.capacity)) === true ? Number(tankConfig.capacity) : 0;
-        let litres = Math.round((capacity * percentage) / 100);
+        let litres = hasReading === true ? Math.round((capacity * rawPercentage) / 100) : undefined;
         let name = typeof tankConfig?.name === 'string' && tankConfig.name.trim() !== '' ? tankConfig.name.trim() : 'Water Tank';
         let updated =
           Number.isFinite(Number(tank?.lastUpdated)) === true
@@ -1968,11 +2032,15 @@ export default class IrrigationSystem extends HomeKitDevice {
         html += '</div>';
 
         html += '<div class="dashboard-tank-stats">';
-        html += '<div class="dashboard-tank-percent">' + percentage + '%</div>';
-        html += '<div class="dashboard-tank-litres">' + litres.toLocaleString() + ' L</div>';
+        html += '<div class="dashboard-tank-percent">' + (hasReading === true ? percentage + '%' : '—') + '</div>';
+        html += '<div class="dashboard-tank-litres">' + (hasReading === true ? litres.toLocaleString() + ' L' : '—') + '</div>';
         html += '<div class="dashboard-tank-capacity">/ ' + capacity.toLocaleString() + ' L</div>';
 
-        if (percentage === 0) {
+        if (hasReading === false) {
+          html += '<div class="dashboard-tank-empty-label">' + (tankConfig.enabled === false ? 'Disabled' : 'No reading') + '</div>';
+        } else if (stale === true) {
+          html += '<div class="dashboard-tank-updated stale">Stale reading</div>';
+        } else if (rawPercentage === 0) {
           html += '<div class="dashboard-tank-empty-label">Empty</div>';
         }
 
@@ -2432,7 +2500,7 @@ export default class IrrigationSystem extends HomeKitDevice {
 
 .irrigation-dashboard .dashboard-usage-bar {
   width: 34px;
-  min-height: 6px;
+  min-height: 0;
   border-radius: 5px 5px 0 0;
   background: linear-gradient(180deg, #60a5fa 0%, #2563eb 100%);
   box-shadow: 0 4px 10px rgba(37,99,235,0.18);

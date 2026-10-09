@@ -5,6 +5,7 @@
   "hkUsername": "75:B0:CC:A8:28:E3",
   "tanks": [
     {
+      "uuid": "6f0ca7d6-2f34-4c67-9d0e-56b6a76d96a8",
       "name": "Tank 1",
       "enabled": true,
       "capacity": 5000,
@@ -16,54 +17,63 @@
   ],
   "zones": [
     {
+      "uuid": "6c107f7b-ec8d-4fc3-86bf-49abf68b15cc",
       "name": "Zone 1",
       "enabled": true,
       "runtime": 1200,
       "relayPin": 14
     },
     {
+      "uuid": "41f2375a-712d-4114-ae2f-91f6379e28b8",
       "name": "Zone 2",
       "enabled": true,
       "runtime": 1200,
       "relayPin": 15
     },
     {
+      "uuid": "a92181c3-2958-44f8-ac45-dfbd8c2a0f4f",
       "name": "Zone 3",
       "enabled": true,
       "runtime": 1200,
       "relayPin": 18
     },
     {
+      "uuid": "89ecedf5-e04c-415f-9e30-98d1ba7c6cf9",
       "name": "Zone 4",
       "enabled": true,
       "runtime": 1200,
       "relayPin": 23
     },
     {
+      "uuid": "6d6e871c-2b3c-4b23-bf6b-e9cbd12e8ae1",
       "name": "Zone 5",
       "enabled": true,
       "runtime": 1200,
       "relayPin": 24
     },
     {
+      "uuid": "410e7f3e-21f6-4393-96f2-19d36b2a6876",
       "name": "Zone 6",
       "enabled": true,
       "runtime": 1200,
       "relayPin": 25
     },
     {
+      "uuid": "f96c3b53-13e7-48b0-90ad-64d4fd77d64f",
       "name": "Zone 7",
       "enabled": true,
       "runtime": 1200,
       "relayPin": 8
     },
     {
+      "uuid": "19730436-d399-46c3-b7aa-c532a2ede5e2",
       "name": "Zone 8",
       "enabled": true,
       "runtime": 1200,
       "relayPin": 7
     },
     {
+      "uuid": "620fbb05-8ac7-461d-a3a4-1b7ee9f02e73",
       "name": "Zone 9",
       "enabled": true,
       "runtime": 7200,
@@ -96,6 +106,7 @@
     "powerSwitch": false,
     "debug": false,
     "hkPairingCode": "031-45-154",
-    "webUIPort": 8581
+    "webUIPort": 8581,
+    "webUIBearerToken": ""
   }
 }
