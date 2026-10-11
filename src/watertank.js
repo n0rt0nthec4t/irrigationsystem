@@ -54,6 +54,7 @@ const USONIC_MIN_VALID_READINGS = Math.ceil(USONIC_READINGS / 2); // Require a v
 const USONIC_MIN_RANGE = 200; // mm
 const USONIC_MAX_RANGE = 4500; // mm
 const USONIC_TIMEOUT = 5000; // ms
+const USONIC_SAMPLE_DELAY = 100; // ms; allow echoes to settle between triggers
 const REFRESH_INTERVAL = 60 * 1000; // ms
 export default class WaterTank {
   static GPIO = undefined; // GPIO library override
@@ -68,6 +69,9 @@ export default class WaterTank {
   #HomeKitDeviceUUID = undefined;
   #readTimer = undefined;
   #reading = false;
+  #stopped = false;
+  #configurationVersion = 0;
+  #cancelMeasurement = undefined;
   #sensorHeight = undefined;
   #minimumLevel = undefined;
   #triggerPin = undefined;
@@ -152,6 +156,7 @@ export default class WaterTank {
     if (typeof deviceData !== 'object' || deviceData === null) {
       return;
     }
+    let previous = [this.#sensorHeight, this.#minimumLevel, this.#triggerPin, this.#echoPin];
 
     if (Object.hasOwn(deviceData, 'sensorHeight') === true) {
       if (Number.isFinite(Number(deviceData.sensorHeight)) === true && Number(deviceData.sensorHeight) > 0) {
@@ -173,6 +178,14 @@ export default class WaterTank {
       this.#echoPin = validGPIOPin(deviceData.sensorEchoPin) === true ? Number(deviceData.sensorEchoPin) : undefined;
     }
 
+    let current = [this.#sensorHeight, this.#minimumLevel, this.#triggerPin, this.#echoPin];
+    if (current.some((value, index) => value !== previous[index]) === true) {
+      // Abort the old measurement and discard its sample. The reader restarts
+      // after a recovery delay using only the new configuration.
+      this.#configurationVersion++;
+      this.#cancelMeasurement?.();
+    }
+
     if (this.#echoPin === undefined || this.#triggerPin === undefined) {
       this?.log?.error?.('No GPIO pins are defined for ultrasonic readings for tank uuid "%s"', this.uuid);
       return;
@@ -189,6 +202,9 @@ export default class WaterTank {
   // Configuration can become valid after construction. Start exactly one timer
   // and retry immediately whenever valid dimensions or pins are applied.
   #startPolling() {
+    if (this.#stopped === true) {
+      return;
+    }
     if (this.#readTimer === undefined) {
       this.#readTimer = setInterval(() => {
         this.#readUsonicSensor();
@@ -198,6 +214,8 @@ export default class WaterTank {
   }
 
   async onShutdown() {
+    this.#stopped = true;
+    this.#cancelMeasurement?.();
     if (this.#readTimer !== undefined) {
       clearInterval(this.#readTimer);
       this.#readTimer = undefined;
@@ -213,15 +231,21 @@ export default class WaterTank {
   }
 
   async #readUsonicSensor() {
-    if (this.#reading === true) {
+    if (this.#reading === true || this.#stopped === true) {
       return;
     }
 
-    if (this.#triggerPin === undefined || this.#echoPin === undefined || this.#sensorHeight === undefined) {
+    if (
+      this.#triggerPin === undefined ||
+      this.#echoPin === undefined ||
+      this.#sensorHeight === undefined ||
+      this.#sensorHeight - this.#minimumLevel - USONIC_MIN_RANGE <= 0
+    ) {
       return;
     }
 
     this.#reading = true;
+    let configurationVersion = this.#configurationVersion;
 
     try {
       let median = (values = []) => {
@@ -232,25 +256,48 @@ export default class WaterTank {
       };
 
       let readings = [];
+      let attempts = [];
 
       for (let i = 0; i < USONIC_READINGS; i++) {
+        // The JSN-SR04T needs at least 60 ms between triggers. Waiting after
+        // each measurement also protects the binary path from residual echoes.
+        if (i > 0) {
+          await new Promise((resolve) => setTimeout(resolve, USONIC_SAMPLE_DELAY));
+        }
+        if (this.#stopped === true || configurationVersion !== this.#configurationVersion) {
+          return;
+        }
         let reading = await this.#readDistance();
+        if (this.#stopped === true || configurationVersion !== this.#configurationVersion) {
+          return;
+        }
+        attempts.push(Number.isFinite(reading) === true ? String(reading) + ' mm' : 'no reading');
 
-        // A distance beyond the configured sensor height is outside the physical
-        // tank and must not be converted into a valid empty-tank reading.
-        if (Number.isFinite(Number(reading)) === true && Number(reading) > 0 && Number(reading) <= this.#sensorHeight) {
-          readings.push(Number(reading));
+        // Validate raw distances before clamping: invalid echoes must not become
+        // full or empty readings at either limit of the sensor's operating range.
+        if (
+          Number.isFinite(reading) === true &&
+          reading >= USONIC_MIN_RANGE &&
+          reading <= USONIC_MAX_RANGE &&
+          reading <= this.#sensorHeight
+        ) {
+          readings.push(reading);
         }
       }
 
+      if (this.#stopped === true) {
+        return;
+      }
       // Keep the last valid level unless a majority of this sample succeeded.
       // This prevents one or two noisy echoes from replacing it with a false value.
       if (readings.length < USONIC_MIN_VALID_READINGS) {
         this?.log?.debug?.(
-          'Ignoring ultrasonic sample for tank uuid "%s": received "%s" valid readings from "%s"',
+          'Ignoring ultrasonic sample for tank uuid "%s": received "%s" valid readings from "%s"; ' + 'distances: %s; sensor height: %s mm',
           this.uuid,
           readings.length,
           USONIC_READINGS,
+          attempts.join(', '),
+          this.#sensorHeight,
         );
         return;
       }
@@ -285,7 +332,13 @@ export default class WaterTank {
         });
       }
     } finally {
+      if (this.#stopped === false && configurationVersion !== this.#configurationVersion) {
+        await new Promise((resolve) => setTimeout(resolve, USONIC_SAMPLE_DELAY));
+      }
       this.#reading = false;
+      if (this.#stopped === false && configurationVersion !== this.#configurationVersion) {
+        this.#readUsonicSensor();
+      }
     }
   }
 
@@ -294,8 +347,8 @@ export default class WaterTank {
     if (this.#usonicBinary === undefined) {
       let distance = await this.#measureDistanceGPIO();
 
-      if (Number.isFinite(Number(distance)) === true) {
-        return Math.max(USONIC_MIN_RANGE, Math.min(USONIC_MAX_RANGE, Number(distance) * 10));
+      if (Number.isFinite(distance) === true) {
+        return distance * 10;
       }
 
       return undefined;
@@ -313,6 +366,7 @@ export default class WaterTank {
         }
 
         resolved = true;
+        this.#cancelMeasurement = undefined;
 
         if (timeout !== undefined) {
           clearTimeout(timeout);
@@ -320,6 +374,16 @@ export default class WaterTank {
         }
 
         resolve(value);
+      };
+
+      this.#cancelMeasurement = () => {
+        // Complete before killing so late process events cannot affect a new read.
+        finish(undefined);
+        try {
+          proc?.kill('SIGKILL');
+        } catch (error) {
+          this?.log?.debug?.('Unable to stop ultrasonic process for tank uuid "%s": %s', this.uuid, String(error));
+        }
       };
 
       // Validate binary exists and is executable
@@ -384,13 +448,13 @@ export default class WaterTank {
         }
 
         if (line.includes('DISTANCE') === true) {
-          let match = line.match(/([0-9]+(\.[0-9]+)?)/);
+          let match = line.match(/^DISTANCE\s+([+-]?[0-9]+(?:\.[0-9]+)?)$/);
 
           if (match !== null) {
             let value = Number(match[1]) * 10;
 
             if (Number.isFinite(value) === true) {
-              finish(Math.max(USONIC_MIN_RANGE, Math.min(USONIC_MAX_RANGE, value)));
+              finish(value);
               return;
             }
           }
@@ -412,88 +476,75 @@ export default class WaterTank {
       return undefined;
     }
 
-    let self = this;
+    // Capture the pins and GPIO implementation for this measurement. Cleanup
+    // must detach the original echo pin even when configuration changes mid-read.
+    let gpio = WaterTank.GPIO;
+    let triggerPin = this.#triggerPin;
+    let echoPin = this.#echoPin;
 
-    return new Promise(async (resolve) => {
-      const TIMEOUT_US = 500000; // 0.5s (~171m max range)
-
+    return new Promise((resolve) => {
       let riseTime = undefined;
       let timeoutTimer = undefined;
+      let settleTimer = undefined;
       let completed = false;
 
-      function cleanup() {
-        if (timeoutTimer !== undefined) {
-          clearTimeout(timeoutTimer);
-          timeoutTimer = undefined;
-        }
-
-        try {
-          WaterTank.GPIO.poll(self.#echoPin, null);
-          // eslint-disable-next-line no-unused-vars
-        } catch (error) {
-          // Ignore cleanup errors
-        }
-      }
-
-      function finish(distanceCm) {
+      let finish = (distanceCm) => {
         if (completed === true) {
           return;
         }
-
         completed = true;
-        cleanup();
+        clearTimeout(timeoutTimer);
+        clearTimeout(settleTimer);
+        this.#cancelMeasurement = undefined;
+        try {
+          gpio.poll(echoPin, null);
+        } catch (error) {
+          this?.log?.debug?.('Unable to stop ultrasonic GPIO polling for tank uuid "%s": %s', this.uuid, String(error));
+        }
         resolve(distanceCm);
-      }
+      };
+      this.#cancelMeasurement = () => finish(undefined);
 
       try {
-        // Configure pins (safe to call repeatedly)
-        WaterTank.GPIO.open(self.#triggerPin, WaterTank.GPIO.OUTPUT, WaterTank.GPIO.LOW);
-        WaterTank.GPIO.open(self.#echoPin, WaterTank.GPIO.INPUT);
-
-        // Interrupt handler for BOTH edges
-        WaterTank.GPIO.poll(
-          self.#echoPin,
+        gpio.open(triggerPin, gpio.OUTPUT, gpio.LOW);
+        gpio.open(echoPin, gpio.INPUT);
+        gpio.poll(
+          echoPin,
           (pin) => {
             if (completed === true) {
               return;
             }
-
-            // Rising edge → start timing
-            if (WaterTank.GPIO.read(pin) === WaterTank.GPIO.HIGH) {
+            if (gpio.read(pin) === gpio.HIGH) {
               riseTime = process.hrtime.bigint();
               return;
             }
-
-            // Falling edge → end timing
             if (riseTime === undefined) {
               return;
             }
-
             let durationUs = Number((process.hrtime.bigint() - riseTime) / 1000n);
-            let distanceCm = durationUs * 0.01715;
-
-            finish(distanceCm);
+            finish(durationUs * 0.01715);
           },
-          WaterTank.GPIO.POLL_BOTH,
+          gpio.POLL_BOTH,
         );
 
-        // Timeout guard
-        timeoutTimer = setTimeout(
-          () => {
+        timeoutTimer = setTimeout(() => finish(undefined), 500);
+        // A cancellable settling timer prevents a trigger after shutdown or an
+        // update, rather than leaving a suspended async executor to resume later.
+        settleTimer = setTimeout(() => {
+          if (completed === true) {
+            return;
+          }
+          try {
+            gpio.write(triggerPin, gpio.HIGH);
+            gpio.usleep(10);
+            gpio.write(triggerPin, gpio.LOW);
+          } catch (error) {
+            this?.log?.debug?.('Ultrasonic GPIO trigger failed for tank uuid "%s": %s', this.uuid, String(error));
             finish(undefined);
-          },
-          Math.ceil(TIMEOUT_US / 1000),
-        );
-
-        // Allow sensor to settle
-        await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
-
-        // Trigger pulse (10µs)
-        WaterTank.GPIO.write(self.#triggerPin, WaterTank.GPIO.HIGH);
-        WaterTank.GPIO.usleep(10);
-        WaterTank.GPIO.write(self.#triggerPin, WaterTank.GPIO.LOW);
-        // eslint-disable-next-line no-unused-vars
+          }
+        }, 50);
       } catch (error) {
+        this?.log?.debug?.('Ultrasonic GPIO setup failed for tank uuid "%s": %s', this.uuid, String(error));
         finish(undefined);
       }
     });

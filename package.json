@@ -2,7 +2,7 @@
     "name": "irrigationsystem",
     "displayName": "Irrigation System",
     "type": "module",
-    "version": "0.0.7",
+    "version": "0.0.8",
     "description": "HomeKit irrigation system using HAP-NodeJS library",
     "author": "n0rt0nthec4t",
     "license": "Apache-2.0",
@@ -34,10 +34,10 @@
     ],
     "scripts": {
         "clean": "rimraf dist",
-        "format": "prettier --write \"{src,tests}/**/*.{js,mjs}\" && eslint --fix \"src/**/*.{js,mjs}\" \"tests/**/*.{js,mjs}\"",
-        "lint": "eslint \"src/**/*.{js,mjs}\" \"tests/**/*.{js,mjs}\" --max-warnings=20",
-        "test": "npm run build && node --test tests/*.test.mjs src/HomeKitDevice/HomeKitDevice.test.js src/HomeKitHistory/HomeKitHistory.test.js",
-        "test:coverage": "npm run build && node --test --experimental-test-coverage tests/*.test.mjs src/HomeKitDevice/HomeKitDevice.test.js src/HomeKitHistory/HomeKitHistory.test.js",
+        "format": "prettier --write \"src/*.{js,mjs}\" \"tests/**/*.{js,mjs}\" && eslint --config eslint.config.js --fix \"src/*.{js,mjs}\" \"tests/**/*.{js,mjs}\"",
+        "lint": "eslint --config eslint.config.js \"src/**/*.{js,mjs}\" \"tests/**/*.{js,mjs}\" --max-warnings=20",
+        "test": "npm run build && node --test tests/*.test.mjs src/HomeKitDevice/HomeKitDevice.test.js src/HomeKitHistory/HomeKitHistory.test.js src/HomeKitUI/HomeKitUI.test.js",
+        "test:coverage": "npm run build && node --test --experimental-test-coverage tests/*.test.mjs src/HomeKitDevice/HomeKitDevice.test.js src/HomeKitHistory/HomeKitHistory.test.js src/HomeKitUI/HomeKitUI.test.js",
         "check": "npm run lint && npm test && npm run build",
         "build": "npm run clean && copyfiles -u 1 src/*.js dist && copyfiles -u 2 src/HomeKitDevice/*.js dist && copyfiles -u 2 src/HomeKitHistory/*.js dist && copyfiles -u 2 src/HomeKitUI/*.js dist && copyfiles -u 2 \"src/HomeKitUI/ui/**\" dist && copyfiles config.schema.json dist",
         "prepublishOnly": "npm run format && npm run lint && npm test && npm run build"

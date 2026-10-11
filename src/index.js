@@ -24,7 +24,7 @@
 // - Scheduling via Eve Home (Aqua)
 // - Integrate Apple WeatherKit for weather-aware irrigation
 //
-// Code version: 2026.10.09
+// Code version: 2026.10.11
 // Mark Hulskamp
 'use strict';
 
@@ -254,6 +254,19 @@ function loadConfiguration(filename) {
   return config;
 }
 
+// Runtime state shared by startup and shutdown
+let tempDevice = undefined;
+let ui = undefined;
+let shuttingDown = false;
+
+// Register before constructing the device so signals during publication use the
+// same cleanup path as normal termination and the Web UI restart action.
+['SIGINT', 'SIGTERM'].forEach((signal) => {
+  process.once(signal, () => {
+    shutdown(signal, 0);
+  });
+});
+
 // Startup code
 log.success(HomeKitDevice.PLUGIN_NAME + ' v' + version + ' (HAP v' + HAP.HAPLibraryVersion() + ') (Node v' + process.versions.node + ')');
 
@@ -313,211 +326,232 @@ let deviceData = {
   programs: config.programs,
 };
 
-let tempDevice = new IrrigationSystem(undefined, HAP, deviceData);
-let accessory = await tempDevice.add('Irrigation System', HAP.Categories.SPRINKLER, true);
-
-// Start HomeKit Web UI if configured to do so
-let ui = undefined;
-if (config.options.webUIPort > 0) {
-  ui = new HomeKitUI({
-    name: 'Irrigation System',
-    version,
-    host: '0.0.0.0',
-    port: config.options.webUIPort,
-    auth: {
-      enabled: typeof config.options.webUIBearerToken === 'string' && config.options.webUIBearerToken !== '',
-      bearerToken: config.options.webUIBearerToken,
-    },
-    configFile: configurationFile,
-    schemaFile: CONFIG_SCHEMA_FILE,
-    accessory,
-    hap: HAP,
-    log,
-    pages: [
-      {
-        id: 'dashboard',
-        title: 'Dashboard',
-        svg: '<svg viewBox="0 0 24 24"><path d="M4 13h6V4H4z"/><path d="M14 20h6V4h-6z"/><path d="M4 20h6v-3H4z"/></svg>',
-        refreshInterval: 1000,
-        trustedHTML: true,
-      },
-      {
-        id: 'zones',
-        title: 'Zones',
-        svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="6" height="6"/><rect x="14" y="4" width="6" height="6"/><rect x="4" y="14" width="6" height="6"/><rect x="14" y="14" width="6" height="6"/></svg>',
-        schemaPath: 'zones',
-      },
-      {
-        id: 'tanks',
-        title: 'Tanks',
-        svg: '<svg viewBox="0 0 24 24"><path d="M12 3C12 3 6 10 6 14a6 6 0 0 0 12 0c0-4-6-11-6-11z"/></svg>',
-        schemaPath: 'tanks',
-      },
-      {
-        id: 'options',
-        title: 'Options',
-        icon: 'settings',
-        schemaPath: 'options',
-      },
-    ],
-    onSaveConfig: async (savedConfig) => {
-      fs.writeFileSync(configurationFile, JSON.stringify(savedConfig, null, 2) + '\n');
-
-      let newConfig = loadConfiguration(configurationFile);
-
-      // Tanks changed
-      if (JSON.stringify(config.tanks) !== JSON.stringify(newConfig.tanks)) {
-        log.debug?.('Tank configuration updated from Web UI');
-
-        await HomeKitDevice.message(accessory.UUID, HomeKitDevice.UPDATE, {
-          tanks: newConfig.tanks,
-        });
-      }
-
-      // Zones changed
-      if (JSON.stringify(config.zones) !== JSON.stringify(newConfig.zones)) {
-        log.debug?.('Zone configuration updated from Web UI');
-
-        await HomeKitDevice.message(accessory.UUID, HomeKitDevice.UPDATE, {
-          zones: newConfig.zones,
-        });
-      }
-
-      // Options changed
-      if (JSON.stringify(config.options) !== JSON.stringify(newConfig.options)) {
-        log.debug?.('Options configuration updated from Web UI');
-
-        await HomeKitDevice.message(accessory.UUID, HomeKitDevice.UPDATE, {
-          eveHistory: newConfig.options.eveHistory,
-          elevation: newConfig.options.elevation,
-          latitude: newConfig.options.latitude,
-          longitude: newConfig.options.longitude,
-          leakSensor: newConfig.options.leakSensor,
-          waterLeakAlert: newConfig.options.waterLeakAlert,
-          sensorFlowPin: newConfig.options.sensorFlowPin,
-          flowRate: newConfig.options.flowRate,
-          maxRuntime: newConfig.options.maxRuntime,
-          powerSwitch: newConfig.options.powerSwitch,
-        });
-      }
-
-      // Debug changed
-      if (config.options.debug !== newConfig.options.debug) {
-        if (newConfig.options.debug === true) {
-          Logger.setDebugEnabled(true);
-          log.warn('Debugging has been enabled');
-        } else {
-          Logger.setDebugEnabled(false);
-          log.warn('Debugging has been disabled');
-        }
-      }
-
-      config = newConfig;
-      log.debug?.('Configuration updated');
-    },
-    onRestart: async () => {
-      await shutdown('restart', 1);
-    },
-    onGetPage: async (id) => {
-      if (id === 'dashboard') {
-        // Return has html and css for dashboard page. We'll get this from the device which can provide dynamic data for display
-        return tempDevice.getDashboard();
-      }
-
-      return {};
-    },
-    onAction: async (action, data, page) => {
-      if (page === 'dashboard' && action === 'power') {
-        // Action to turn system power on/off virtually
-        tempDevice.setPower(data?.power === true);
-      }
-
-      if (page === 'dashboard' && action === 'zone') {
-        // Action to turn on/off a zone
-        let zone = config.zones.find((item) => item.uuid === data.uuid);
-
-        if (zone !== undefined) {
-          tempDevice.setZoneActive(zone, data.active === true);
-        }
-      }
-    },
+try {
+  tempDevice = new IrrigationSystem(undefined, HAP, deviceData);
+  // The shared device API returns a success flag; the HAP instance is on the device.
+  let added = await tempDevice.add({
+    hapAccessoryName: 'Irrigation System',
+    hapCategory: HAP.Categories.SPRINKLER,
+    enableHistory: true,
   });
+  if (added !== true || tempDevice.accessory === undefined) {
+    throw new Error('Unable to initialise and publish the HomeKit irrigation accessory');
+  }
+  let accessory = tempDevice.accessory;
 
-  await ui.start();
-}
+  // Start HomeKit Web UI if configured to do so
+  if (config.options.webUIPort > 0 && shuttingDown === false) {
+    ui = new HomeKitUI({
+      name: 'Irrigation System',
+      version,
+      host: '0.0.0.0',
+      port: config.options.webUIPort,
+      auth: {
+        enabled: typeof config.options.webUIBearerToken === 'string' && config.options.webUIBearerToken !== '',
+        bearerToken: config.options.webUIBearerToken,
+      },
+      configFile: configurationFile,
+      schemaFile: CONFIG_SCHEMA_FILE,
+      accessory,
+      hap: HAP,
+      log,
+      pages: [
+        {
+          id: 'dashboard',
+          title: 'Dashboard',
+          svg: '<svg viewBox="0 0 24 24"><path d="M4 13h6V4H4z"/><path d="M14 20h6V4h-6z"/><path d="M4 20h6v-3H4z"/></svg>',
+          refreshInterval: 1000,
+          trustedHTML: true,
+        },
+        {
+          id: 'zones',
+          title: 'Zones',
+          svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="6" height="6"/><rect x="14" y="4" width="6" height="6"/><rect x="4" y="14" width="6" height="6"/><rect x="14" y="14" width="6" height="6"/></svg>',
+          schemaPath: 'zones',
+        },
+        {
+          id: 'tanks',
+          title: 'Tanks',
+          svg: '<svg viewBox="0 0 24 24"><path d="M12 3C12 3 6 10 6 14a6 6 0 0 0 12 0c0-4-6-11-6-11z"/></svg>',
+          schemaPath: 'tanks',
+        },
+        {
+          id: 'options',
+          title: 'Options',
+          icon: 'settings',
+          schemaPath: 'options',
+        },
+      ],
+      onSaveConfig: async (savedConfig) => {
+        fs.writeFileSync(configurationFile, JSON.stringify(savedConfig, null, 2) + '\n');
 
-// Setup message listener for set calls from the irrigation system
-// Allows us to set and save back to configuration file
-HomeKitDevice.message(tempDevice.uuid, HomeKitDevice.SET, async (values) => {
-  if (values?.zone !== undefined && values?.zone?.uuid !== undefined) {
-    // Setting a zone's details. We'll use the enclosed uuid to match into our configuration file
-    // We'll also only update details if present
-    config.zones
-      .filter((zone) => zone.uuid === values.zone.uuid)
-      .forEach((zone) => {
-        Object.entries(values.zone).forEach(([key, value]) => {
-          if (zone?.[key] !== undefined) {
-            zone[key] = value;
+        let newConfig = loadConfiguration(configurationFile);
+
+        // Tanks changed
+        if (JSON.stringify(config.tanks) !== JSON.stringify(newConfig.tanks)) {
+          log.debug?.('Tank configuration updated from Web UI');
+
+          await HomeKitDevice.message(accessory.UUID, HomeKitDevice.UPDATE, {
+            tanks: newConfig.tanks,
+          });
+        }
+
+        // Zones changed
+        if (JSON.stringify(config.zones) !== JSON.stringify(newConfig.zones)) {
+          log.debug?.('Zone configuration updated from Web UI');
+
+          await HomeKitDevice.message(accessory.UUID, HomeKitDevice.UPDATE, {
+            zones: newConfig.zones,
+          });
+        }
+
+        // Options changed
+        if (JSON.stringify(config.options) !== JSON.stringify(newConfig.options)) {
+          log.debug?.('Options configuration updated from Web UI');
+
+          await HomeKitDevice.message(accessory.UUID, HomeKitDevice.UPDATE, {
+            eveHistory: newConfig.options.eveHistory,
+            elevation: newConfig.options.elevation,
+            latitude: newConfig.options.latitude,
+            longitude: newConfig.options.longitude,
+            leakSensor: newConfig.options.leakSensor,
+            waterLeakAlert: newConfig.options.waterLeakAlert,
+            sensorFlowPin: newConfig.options.sensorFlowPin,
+            flowRate: newConfig.options.flowRate,
+            maxRuntime: newConfig.options.maxRuntime,
+            powerSwitch: newConfig.options.powerSwitch,
+          });
+        }
+
+        // Debug changed
+        if (config.options.debug !== newConfig.options.debug) {
+          if (newConfig.options.debug === true) {
+            Logger.setDebugEnabled(true);
+            log.warn('Debugging has been enabled');
+          } else {
+            Logger.setDebugEnabled(false);
+            log.warn('Debugging has been disabled');
+          }
+        }
+
+        config = newConfig;
+        log.debug?.('Configuration updated');
+      },
+      onRestart: async () => {
+        await shutdown('restart', 1);
+      },
+      onGetPage: async (id) => {
+        if (id === 'dashboard') {
+          // Return has html and css for dashboard page. We'll get this from the device which can provide dynamic data for display
+          return tempDevice.getDashboard();
+        }
+
+        return {};
+      },
+      onAction: async (action, data, page) => {
+        if (page === 'dashboard' && action === 'power') {
+          // Action to turn system power on/off virtually
+          tempDevice.setPower(data?.power === true);
+        }
+
+        if (page === 'dashboard' && action === 'zone') {
+          // Action to turn on/off a zone
+          let zone = config.zones.find((item) => item.uuid === data.uuid);
+
+          if (zone !== undefined) {
+            tempDevice.setZoneActive(zone, data.active === true);
+          }
+        }
+      },
+    });
+
+    await ui.start();
+  }
+
+  // Setup message listener for set calls from the irrigation system
+  // Allows us to set and save back to configuration file
+  if (shuttingDown === false) {
+    HomeKitDevice.message(tempDevice.uuid, HomeKitDevice.SET, async (values) => {
+      if (values?.zone !== undefined && values?.zone?.uuid !== undefined) {
+        // Setting a zone's details. We'll use the enclosed uuid to match into our configuration file
+        // We'll also only update details if present
+        config.zones
+          .filter((zone) => zone.uuid === values.zone.uuid)
+          .forEach((zone) => {
+            Object.entries(values.zone).forEach(([key, value]) => {
+              if (zone?.[key] !== undefined) {
+                zone[key] = value;
+              }
+            });
+          });
+      }
+
+      if (typeof values?.options === 'object' && values.options !== null && Array.isArray(values.options) === false) {
+        // Setting an 'option'
+        // We'll also only update details if present
+        Object.entries(values.options).forEach(([key, value]) => {
+          if (config?.options?.[key] !== undefined) {
+            config.options[key] = value;
           }
         });
-      });
-  }
-
-  if (typeof values?.options === 'object' && values.options !== null && Array.isArray(values.options) === false) {
-    // Setting an 'option'
-    // We'll also only update details if present
-    Object.entries(values.options).forEach(([key, value]) => {
-      if (config?.options?.[key] !== undefined) {
-        config.options[key] = value;
       }
+
+      if (typeof values?.power === 'boolean') {
+        // Setting 'power' status
+        config.power = values.power;
+      }
+
+      if (Number.isFinite(Number(values?.pauseTimeout)) === true) {
+        // Setting 'pause timeout' status
+        config.pauseTimeout = Number(values.pauseTimeout);
+      }
+
+      if (values?.programs !== undefined) {
+        // Setting 'program/schedules'
+        config.programs = values.programs;
+      }
+
+      // Write config backout!!
+      fs.writeFileSync(configurationFile, JSON.stringify(config, null, 2) + '\n');
+      log.debug?.('Configuration updated');
     });
   }
-
-  if (typeof values?.power === 'boolean') {
-    // Setting 'power' status
-    config.power = values.power;
+} catch (error) {
+  // Intentional shutdown can cancel add(); the signal handler owns that cleanup.
+  if (shuttingDown === false) {
+    log.error('Failed to start irrigation controller: %s', String(error));
+    await shutdown('startup failure', 1);
   }
-
-  if (Number.isFinite(Number(values?.pauseTimeout)) === true) {
-    // Setting 'pause timeout' status
-    config.pauseTimeout = Number(values.pauseTimeout);
-  }
-
-  if (values?.programs !== undefined) {
-    // Setting 'program/schedules'
-    config.programs = values.programs;
-  }
-
-  // Write config backout!!
-  fs.writeFileSync(configurationFile, JSON.stringify(config, null, 2) + '\n');
-  log.debug?.('Configuration updated');
-});
+}
 
 // Handle process shutdown
-let shuttingDown = false;
 async function shutdown(signal, exitCode = 0) {
   if (shuttingDown === true) {
     return;
   }
-
   shuttingDown = true;
 
   log.warn('Received %s, shutting down gracefully...', signal);
-
-  await HomeKitDevice.shutdown();
-
-  if (ui !== undefined) {
-    ui.stop().catch(() => {
-      // Empty
-    });
+  let shutdownExitCode = exitCode;
+  try {
+    // Await the owned device directly: global shutdown isolates failures, while
+    // the application must report GPIO cleanup failures in its exit status.
+    if (tempDevice !== undefined) {
+      await tempDevice.shutdown();
+    }
+  } catch (error) {
+    log.error('Failed to shut down irrigation system: %s', String(error));
+    shutdownExitCode = 1;
   }
 
-  process.exit(exitCode);
-}
+  if (ui !== undefined) {
+    try {
+      await ui.stop();
+    } catch (error) {
+      log.error('Failed to stop Web UI: %s', String(error));
+      shutdownExitCode = 1;
+    }
+  }
 
-// Register process signal handlers for graceful shutdown
-['SIGINT', 'SIGTERM'].forEach((signal) => {
-  process.once(signal, () => {
-    shutdown(signal, 0);
-  });
-});
+  process.exit(shutdownExitCode);
+}

@@ -154,7 +154,8 @@ test('dashboard refresh resumes after select interaction while text edits remain
       },
     }),
   );
-  handlers.pointerdown[0]({ target: activeElement });
+  handlers.pointerdown[0]({ target: activeElement, pointerId: 1 });
+  handlers.pointerup[0]({ pointerId: 1 });
   await timer();
   assert.equal(loads, 0);
   now += 5000;

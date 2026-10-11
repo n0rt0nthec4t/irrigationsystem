@@ -2,6 +2,26 @@
 
 All notable changes to `irrigationsystem` will be documented in this file. This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.0.8 (2026/10/11)
+
+### Dependency Updates
+
+- Updated `HomeKitUI` to `2026.10.11`
+- Updated `HomeKitDevice` to `2026.10.11`
+
+### Fixed
+
+- Restricted `npm run format` to application source and tests so it does not modify shared submodules
+- Fixed flow-sensor owner lookups and GPIO declarations producing incorrect private-field and undefined-only type errors
+- Fixed SIGINT/SIGTERM and restart handling to await device and Web UI cleanup, report shutdown failures, and handle signals during startup
+- Preserved final run usage during shutdown and immediate zone switching with queued HomeKitDevice lifecycle messages
+- Fixed pending usage pulses being recalculated or lost when flow calibration or sensor pins change
+- Fixed ultrasonic GPIO sampling triggering after shutdown and leaving echo polling active until timeout
+- Fixed tank configuration changes combining readings from different pins or dimensions in one sample
+- Fixed back-to-back ultrasonic triggers preventing a valid tank sample; added sensor recovery delays and rejected-distance diagnostics
+- Fixed out-of-range ultrasonic echoes being clamped into plausible tank readings before validation
+- Fixed standalone HomeKit startup using the old positional `HomeKitDevice.add()` API and treating its success flag as an accessory
+
 ## v0.0.7 (2026/10/09)
 
 ### Changed

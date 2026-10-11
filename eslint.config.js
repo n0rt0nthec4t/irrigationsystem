@@ -12,6 +12,8 @@ export default [{
     sourceType: 'module',
     globals: {
       structuredClone: 'readonly',
+      AbortController: 'readonly',
+      AggregateError: 'readonly',
     },
   },
   rules: {
@@ -37,5 +39,21 @@ export default [{
     'no-undef': ['error'],
     'no-unused-vars': ['error'],
     'no-empty': ['error'],
+  },
+}, {
+  // Test harnesses intentionally use Node globals and replace console methods.
+  // Keep these allowances scoped to tests so application lint checks stay strict.
+  files: ['**/*.test.{js,mjs}'],
+  languageOptions: {
+    globals: {
+      queueMicrotask: 'readonly',
+      URL: 'readonly',
+      Blob: 'readonly',
+      console: 'readonly',
+      process: 'readonly',
+    },
+  },
+  rules: {
+    'no-console': 'off',
   },
 }];

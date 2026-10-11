@@ -25,7 +25,7 @@
 // - GPIO library must be assigned to FlowSensor.GPIO before use
 // - Valid GPIO pin required
 //
-// Code version 2026.10.09
+// Code version 2026.10.11
 // Mark Hulskamp
 'use strict';
 
@@ -39,24 +39,24 @@ import HomeKitDevice from './HomeKitDevice.js';
 import { validGPIOPin, LOG_LEVELS } from './utils.js';
 
 export default class FlowSensor {
-  static GPIO = undefined; // GPIO library override
+  static GPIO; // GPIO library override, assigned before sensors are created
   static FLOW_EVENT = 'FLOWEVENT';
   static LEAK_EVENT = 'LEAKEVENT';
 
   // Track all active sensors by pin (single owner per pin)
-  static #sensors = {};
+  static #sensors = new Map();
 
   uuid = undefined; // Unique identifier for this flow sensor instance
 
   #HomeKitDeviceUUID = undefined;
-  #sensorPin = undefined;
+  #sensorPin;
   #targets = new Set();
   #pulseCounter = 0;
   #lastPulseTime = 0;
   #minimumPulseGap = 20; // ms
   #lastFlowTime = Date.now();
   #flowRate = 0;
-  #timer = undefined;
+  #timer;
   #leakEnabled = false;
   #leakDetected = false;
   #lastExpectedFlowTime = 0;
@@ -108,7 +108,10 @@ export default class FlowSensor {
     // Updates must be applied to the owner instance for this GPIO pin.
     // If this instance attached to an existing sensor, the owner holds the timer,
     // pulse counter, leak state, and registered targets.
-    let sensor = FlowSensor.#sensors[this.#sensorPin] ?? this;
+    let sensor = FlowSensor.#sensors.get(this.#sensorPin);
+    if (sensor === undefined) {
+      return;
+    }
 
     // Flow rate calibration can be safely changed live.
     // Only update it when explicitly supplied AND changed so we avoid noisy logs.
@@ -117,6 +120,10 @@ export default class FlowSensor {
         let newRate = Number(deviceData.flowRate);
 
         if (newRate !== sensor.#flowRate) {
+          // Account for pending pulses at the old calibration before changing it.
+          if (sensor.#pulseCounter > 0) {
+            sensor.#processFlow();
+          }
           this?.log?.debug?.(
             'Updating flow rate calibration for sensor on pin "%s" from "%s" to "%s" L/min @ 1Hz',
             this.#sensorPin,
@@ -155,14 +162,23 @@ export default class FlowSensor {
   }
 
   onShutdown() {
-    if (this.#sensorPin === undefined || FlowSensor.#sensors[this.#sensorPin] === undefined) {
+    let sensorPin = this.#sensorPin;
+    if (sensorPin === undefined) {
       return;
     }
 
     // Detach this HomeKitDevice target from the owner sensor.
     // The owner may be this instance or another shared instance for the same pin.
-    let sensorPin = this.#sensorPin;
-    let sensor = FlowSensor.#sensors[sensorPin];
+    let sensor = FlowSensor.#sensors.get(sensorPin);
+    if (sensor === undefined) {
+      return;
+    }
+
+    // Removal is also a measurement boundary. Deliver pending usage while this
+    // target is still registered, before detaching or resetting the owner.
+    if (sensor.#pulseCounter > 0) {
+      sensor.#processFlow();
+    }
 
     sensor.#targets.delete(this.#HomeKitDeviceUUID);
 
@@ -185,7 +201,7 @@ export default class FlowSensor {
     }
 
     // Remove owner from shared registry and clear owner runtime state.
-    delete FlowSensor.#sensors[sensorPin];
+    FlowSensor.#sensors.delete(sensorPin);
 
     sensor.#sensorPin = undefined;
     sensor.#pulseCounter = 0;
@@ -199,7 +215,10 @@ export default class FlowSensor {
   }
 
   markExpectedFlow(value = true) {
-    let sensor = FlowSensor.#sensors[this.#sensorPin] ?? this;
+    let sensor = FlowSensor.#sensors.get(this.#sensorPin);
+    if (sensor === undefined) {
+      return;
+    }
 
     let newState = value === true;
 
@@ -238,12 +257,18 @@ export default class FlowSensor {
   }
 
   setLeakDetectionEnabled(value = true) {
-    let sensor = FlowSensor.#sensors[this.#sensorPin] ?? this;
+    let sensor = FlowSensor.#sensors.get(this.#sensorPin);
+    if (sensor === undefined) {
+      return;
+    }
     sensor.#leakEnabled = value === true;
   }
 
   isLeaking() {
-    let sensor = FlowSensor.#sensors[this.#sensorPin] ?? this;
+    let sensor = FlowSensor.#sensors.get(this.#sensorPin);
+    if (sensor === undefined) {
+      return false;
+    }
     return sensor.#leakDetected === true;
   }
 
@@ -265,7 +290,7 @@ export default class FlowSensor {
     // Reuse an existing sensor owner for this GPIO pin.
     // Only the owner keeps the pulse counter, polling callback, timer, and buffers.
     // This instance only registers its HomeKitDevice UUID as another target.
-    let existing = FlowSensor.#sensors[this.#sensorPin];
+    let existing = FlowSensor.#sensors.get(this.#sensorPin);
 
     if (existing !== undefined) {
       if (this.#HomeKitDeviceUUID !== undefined) {
@@ -320,18 +345,13 @@ export default class FlowSensor {
     }, 1000);
 
     // Store this instance as the shared owner for this GPIO pin.
-    FlowSensor.#sensors[this.#sensorPin] = this;
+    FlowSensor.#sensors.set(this.#sensorPin, this);
   }
 
-  /**
-   * Consume pending pulses synchronously at a zone boundary without broadcasting.
-   * The caller must account for the returned sample before starting/ending a run.
-   *
-   * @returns {{uuid: string, pin: number, time: number, rate: number, volume: number}|undefined}
-   *   Measured interval volume in litres and rate in L/min, or undefined when detached.
-   */
+  // Consume pending pulses without broadcasting. The caller accounts for the
+  // returned volume before starting or ending a run. Detached sensors return undefined.
   flush() {
-    let sensor = FlowSensor.#sensors[this.#sensorPin];
+    let sensor = FlowSensor.#sensors.get(this.#sensorPin);
     return sensor === undefined ? undefined : sensor.#takeFlowSample();
   }
 

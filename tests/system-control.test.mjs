@@ -30,7 +30,7 @@ function fixture(t, options = {}) {
   t.mock.method(GPIO, 'poll', (pin, callback) => polls.set(pin, callback));
   const system = new IrrigationSystem(undefined, HAP, {
     serialNumber: 'control-test-' + ++serial,
-    softwareVersion: '0.0.7',
+    softwareVersion: '0.0.8',
     description: 'Irrigation System',
     model: 'Irrigation',
     manufacturer: 'test',
@@ -39,6 +39,7 @@ function fixture(t, options = {}) {
     power: true,
     pauseTimeout: 0,
     maxRuntime: 7200,
+    programs: { enabled: false, schedules: [] },
     tanks: [],
     zones: [{ uuid: 'zone', name: 'Zone', enabled: true, runtime: 10, relayPin: 20 }],
     ...options,
@@ -56,8 +57,9 @@ function fixture(t, options = {}) {
 }
 
 async function settle() {
-  // Lifecycle dispatch awaits hooks; finish those continuations before assertions.
-  for (let index = 0; index < 10; index++) {
+  // Queued lifecycle dispatch awaits hooks and nested messages; drain those
+  // continuations before advancing the mocked clock or inspecting state.
+  for (let index = 0; index < 200; index++) {
     await Promise.resolve();
   }
 }
@@ -126,6 +128,33 @@ test('pending pulses are saved at stop and cannot move into the next run', async
   assert.equal(f.history.filter((sample) => sample.entry.status === 0).at(-1).entry.water, 0);
 });
 
+test('device shutdown closes the active run and saves final pulses before sensor teardown', async (t) => {
+  const f = fixture(t, { sensorFlowPin: 18, flowRate: 1 });
+  f.system.setZoneActive(f.zone, true);
+  t.mock.timers.tick(25);
+  f.polls.get(18)(18);
+  await f.system.shutdown();
+  assert.equal(f.pins.get(20), GPIO.LOW);
+  assert.equal(f.polls.get(18), null);
+  const completed = f.history.filter((sample) => sample.entry.status === 0);
+  assert.equal(completed.length, 1);
+  assert.ok(Math.abs(completed[0].entry.water - 1 / 60) < 1e-12);
+});
+
+test('valve shutdown failures reject after other cleanup handlers finish', async (t) => {
+  const f = fixture(t, { sensorFlowPin: 18, flowRate: 1 });
+  f.system.setZoneActive(f.zone, true);
+  const write = GPIO.write;
+  t.mock.method(GPIO, 'write', (pin, value) => {
+    if (pin === 20 && value === GPIO.LOW) {
+      throw new Error('GPIO close failed');
+    }
+    return write(pin, value);
+  });
+  await assert.rejects(f.system.shutdown(), /Irrigation valve shutdown failed/);
+  assert.equal(f.polls.get(18), null);
+});
+
 test('final sampling includes pulses consumed in the same millisecond as a sensor tick', async (t) => {
   const f = fixture(t, { sensorFlowPin: 18, flowRate: 1 });
   f.system.setZoneActive(f.zone, true);
@@ -134,6 +163,41 @@ test('final sampling includes pulses consumed in the same millisecond as a senso
   f.system.setZoneActive(f.zone, false);
   await settle();
   assert.ok(Math.abs(f.history.find((sample) => sample.entry.status === 0).entry.water - 1 / 60) < 1e-12);
+});
+
+test('live flow calibration accounts for pending pulses at their original calibration', async (t) => {
+  const f = fixture(t, { sensorFlowPin: 18, flowRate: 1 });
+  f.system.setZoneActive(f.zone, true);
+  for (let index = 0; index < 10; index++) {
+    t.mock.timers.tick(25);
+    f.polls.get(18)(18);
+  }
+  await f.system.message(HomeKitDevice.UPDATE, { flowRate: 2 });
+  for (let index = 0; index < 10; index++) {
+    t.mock.timers.tick(25);
+    f.polls.get(18)(18);
+  }
+  f.system.setZoneActive(f.zone, false);
+  await settle();
+  assert.ok(Math.abs(f.history.find((sample) => sample.entry.status === 0).entry.water - 30 / 60) < 1e-12);
+});
+
+test('changing or removing the flow pin preserves pending usage in the running zone', async (t) => {
+  const f = fixture(t, { sensorFlowPin: 18, flowRate: 1 });
+  f.system.setZoneActive(f.zone, true);
+  t.mock.timers.tick(25);
+  f.polls.get(18)(18);
+  await f.system.message(HomeKitDevice.UPDATE, { sensorFlowPin: 19 });
+  assert.equal(f.polls.get(18), null);
+  t.mock.timers.tick(25);
+  f.polls.get(19)(19);
+  // Undefined values are omitted by the shared UPDATE dispatcher. Exercise the
+  // controller's removal path with the complete configuration it consumes.
+  f.system.onUpdate({ ...f.system.deviceData, sensorFlowPin: undefined });
+  assert.equal(f.polls.get(19), null);
+  f.system.setZoneActive(f.zone, false);
+  await settle();
+  assert.ok(Math.abs(f.history.find((sample) => sample.entry.status === 0).entry.water - 2 / 60) < 1e-12);
 });
 
 test('empty and invalid relay layouts cannot drive GPIO zero', (t) => {

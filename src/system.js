@@ -71,7 +71,7 @@ WaterTank.GPIO = GPIO;
 
 export default class IrrigationSystem extends HomeKitDevice {
   static TYPE = 'IrrigationSystem';
-  static VERSION = '2026.10.09';
+  static VERSION = '2026.10.11';
 
   irrigationService = undefined; // HomeKit service for this irrigation system
   leakSensorService = undefined; // HomeKit service for a "leak" sensor
@@ -184,6 +184,24 @@ export default class IrrigationSystem extends HomeKitDevice {
       if (this.leakSensorService !== undefined && waterLeakAlert !== this.deviceData.waterLeakAlert) {
         this?.log?.info?.('Leak sensor', waterLeakAlert === true ? 'with alerting' : 'with no alerting');
       }
+    }
+  }
+
+  onShutdown() {
+    // Teardown ignores later custom messages. Close and account for each run
+    // directly rather than relying on queued valve/flow events during shutdown.
+    this.#flushFlow();
+    let errors = [];
+    Object.values(this.#zones).forEach((zoneData) => {
+      let zone = zoneData.config;
+      if (this.#closeZoneValves(zone, zoneData) === false) {
+        errors.push(new Error('Unable to close all valves for zone "' + zone.name + '"'));
+      } else if (zoneData.run !== undefined) {
+        this.#completeZoneRun(zone, zoneData, Date.now());
+      }
+    });
+    if (errors.length > 0) {
+      throw new AggregateError(errors, 'Irrigation valve shutdown failed');
     }
   }
 
@@ -615,7 +633,7 @@ export default class IrrigationSystem extends HomeKitDevice {
     }
 
     if (wantsStop === true) {
-      // Capture this run before valve-close events can finish it synchronously.
+      // Identify this run so a failed-close retry cannot clear a later run.
       let stoppingRun = zoneData.run;
       this.#flushFlow();
 
@@ -626,6 +644,12 @@ export default class IrrigationSystem extends HomeKitDevice {
       if (this.#closeZoneValves(activeZone, zoneData) === false) {
         // The central 1 Hz timer will keep trying until the relay closes.
         zoneData.endTime = Date.now();
+      } else if (zoneData.run !== undefined) {
+        // Valve events are queued by HomeKitDevice. Finish a confirmed close
+        // now so a subsequent start can proceed without waiting for dispatch.
+        this.lastValveClose = Date.now();
+        this.#completeZoneRun(activeZone, zoneData, this.lastValveClose);
+        return;
       }
 
       // Delayed recovery belongs only to the run that requested this stop.
@@ -951,6 +975,9 @@ export default class IrrigationSystem extends HomeKitDevice {
     let zoneData = this.#zones[associatedZone.uuid];
 
     if (message.status === Valve.OPENED) {
+      if (zoneData.valves.find((valve) => valve.uuid === message.uuid)?.isOpen() !== true) {
+        return;
+      }
       if (zoneData.run === undefined && associatedZone?.enabled !== true) {
         let openedValve = zoneData.valves.find((valve) => valve?.uuid === message.uuid);
 
@@ -996,7 +1023,8 @@ export default class IrrigationSystem extends HomeKitDevice {
     }
 
     if (message.status === Valve.CLOSED) {
-      if (zoneData.run === undefined) {
+      // Ignore a queued close from a previous run after a valve has reopened.
+      if (zoneData.run === undefined || zoneData.valves.find((valve) => valve.uuid === message.uuid)?.isOpen() === true) {
         return;
       }
 
@@ -1382,6 +1410,14 @@ export default class IrrigationSystem extends HomeKitDevice {
   }
 
   #setupFlowSensor(deviceData = {}, atStart = false) {
+    // Consume the old interval directly before reconfiguration queues its final
+    // flow event; a following stop must not complete before that usage arrives.
+    if (
+      this.#flowSensor !== undefined &&
+      (deviceData.sensorFlowPin !== this.deviceData.sensorFlowPin || deviceData.flowRate !== this.deviceData.flowRate)
+    ) {
+      this.#flushFlow();
+    }
     // No flow pin configured, so remove any existing flow sensor
     if (deviceData.sensorFlowPin === undefined) {
       if (this.#flowSensor !== undefined) {

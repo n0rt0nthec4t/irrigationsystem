@@ -19,7 +19,7 @@ function normalise(config) {
   const source = fs.readFileSync('src/index.js', 'utf8');
   // Evaluate the actual loader; the entrypoint's startup has hardware side effects.
   vm.runInContext(
-    source.slice(source.indexOf('function loadConfiguration'), source.indexOf('// Startup code')) +
+    source.slice(source.indexOf('function loadConfiguration'), source.indexOf('// Runtime state shared')) +
       '\nglobalThis.config = loadConfiguration("fixture.json");',
     context,
   );
