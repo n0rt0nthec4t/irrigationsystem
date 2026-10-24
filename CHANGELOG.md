@@ -4,6 +4,11 @@ All notable changes to `irrigationsystem` will be documented in this file. This 
 
 ## v0.0.9 (2026/10/24)
 
+### Dependency Updates
+
+- Updated Express to `5.3.0`, ESLint to `10.13.0`, TypeScript ESLint parser to `8.72.0`, Node types to `26.6.5`, and Prettier to `3.9.10`
+- Refreshed indirect dependencies in the lockfile
+
 ### Added
 
 - Added zone request sources to logs to distinguish Web UI commands, HomeKit commands, runtime expiry, and zone switches
@@ -11,8 +16,13 @@ All notable changes to `irrigationsystem` will be documented in this file. This 
 
 ### Fixed
 
+- Implemented the expected-flow pulse diagnostics without consuming or resetting usage samples
 - Removed the 20 ms flow-sensor pulse rejection gate so every rising-edge callback contributes to measured usage
 - Preserved fractional litres in zone completion logs so small positive flow measurements are not reported as 0L
+
+### Changed
+
+- Replaced copyfiles and rimraf build dependencies with Node.js build and clean scripts
 
 ## v0.0.8 (2026/10/11)
 

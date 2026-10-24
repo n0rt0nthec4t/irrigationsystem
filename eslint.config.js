@@ -1,5 +1,7 @@
+// Configure lint rules and Node.js globals for the project's ES modules.
 import stylistic from '@stylistic/eslint-plugin';
 import parserTs from '@typescript-eslint/parser';
+import globals from 'globals';
 
 export default [{
   ignores: ['dist'],
@@ -10,11 +12,7 @@ export default [{
     parser: parserTs,
     ecmaVersion: 'latest',
     sourceType: 'module',
-    globals: {
-      structuredClone: 'readonly',
-      AbortController: 'readonly',
-      AggregateError: 'readonly',
-    },
+    globals: globals.nodeBuiltin,
   },
   rules: {
     '@stylistic/semi': ['warn'],
@@ -28,6 +26,13 @@ export default [{
     'prefer-arrow-callback': ['warn'],
     '@stylistic/max-len': ['warn', 140],
     'no-console': ['warn'],
+    'no-restricted-syntax': [
+      'error',
+      {
+        selector: 'TemplateLiteral',
+        message: 'Use explicit string concatenation instead of template-literal strings.',
+      },
+    ],
     '@stylistic/no-non-null-assertion': ['off'],
     '@stylistic/comma-spacing': ['error'],
     '@stylistic/no-multi-spaces': ['warn', {ignoreEOLComments: true}],
@@ -39,21 +44,5 @@ export default [{
     'no-undef': ['error'],
     'no-unused-vars': ['error'],
     'no-empty': ['error'],
-  },
-}, {
-  // Test harnesses intentionally use Node globals and replace console methods.
-  // Keep these allowances scoped to tests so application lint checks stay strict.
-  files: ['**/*.test.{js,mjs}'],
-  languageOptions: {
-    globals: {
-      queueMicrotask: 'readonly',
-      URL: 'readonly',
-      Blob: 'readonly',
-      console: 'readonly',
-      process: 'readonly',
-    },
-  },
-  rules: {
-    'no-console': 'off',
   },
 }];

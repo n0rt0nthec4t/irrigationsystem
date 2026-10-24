@@ -83,6 +83,22 @@ test('expected-flow diagnostics report received pulses without losing usage', (t
   sensor.markExpectedFlow(true);
   sensor.markExpectedFlow(false);
   assert.match(logs.at(-1), /"0" received pulses/);
+
+  // Idle pulses still contribute usage but must not enter the next diagnostic
+  // period. Repeated starts and flushes must not reset its cumulative count.
+  pulse();
+  assert.equal(sensor.flush().volume, 0.964 / 60);
+  sensor.markExpectedFlow(true);
+  pulse();
+  t.mock.timers.tick(15000);
+  sensor.markExpectedFlow(true);
+  pulse();
+  t.mock.timers.tick(15000);
+  assert.match(logs.at(-1), /"2" received pulses over "30" seconds/);
+  pulse();
+  assert.equal(sensor.flush().volume, 0.964 / 60);
+  sensor.markExpectedFlow(false);
+  assert.match(logs.at(-1), /"3" received pulses over "30" seconds/);
 });
 
 test('shared sensors retain pending volume and polling until their last target detaches', (t) => {
