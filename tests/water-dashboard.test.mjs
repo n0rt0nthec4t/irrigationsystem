@@ -147,7 +147,8 @@ test('dashboard refresh resumes after select interaction while text edits remain
   let source = fs.readFileSync('src/HomeKitUI/ui/app.js', 'utf8').replace('// Start UI\nload();\nstartRuntimeTimer();', '');
   vm.runInContext(source, context);
   vm.runInContext(
-    'state.info = { pages: [{ id: \'dashboard\', refreshInterval: 1000 }] }; lastStatusPoll = Date.now(); loadPageData = async () => { recordLoad(); }; scheduleRender = () => {}; startRuntimeTimer();',
+    'state.info = { pages: [{ id: \'dashboard\', refreshInterval: 1000 }] }; lastStatusPoll = Date.now(); ' +
+      'loadPageData = async () => { recordLoad(); }; scheduleRender = () => {}; startRuntimeTimer();',
     Object.assign(context, {
       recordLoad: () => {
         loads++;

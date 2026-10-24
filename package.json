@@ -35,7 +35,7 @@
     "scripts": {
         "clean": "node scripts/clean.js",
         "format": "prettier --write \"src/*.{js,mjs}\" \"tests/**/*.{js,mjs}\" \"scripts/**/*.js\" && eslint --config eslint.config.js --fix \"src/*.{js,mjs}\" \"tests/**/*.{js,mjs}\" \"scripts/**/*.js\"",
-        "lint": "eslint --config eslint.config.js \"src/**/*.{js,mjs}\" \"tests/**/*.{js,mjs}\" \"scripts/**/*.js\" --max-warnings=20",
+        "lint": "eslint --config eslint.config.js \"src/*.{js,mjs}\" \"tests/**/*.{js,mjs}\" \"scripts/**/*.js\" --max-warnings=20",
         "test": "npm run build && node --test tests/*.test.mjs src/HomeKitDevice/HomeKitDevice.test.js src/HomeKitHistory/HomeKitHistory.test.js src/HomeKitUI/HomeKitUI.test.js",
         "test:coverage": "npm run build && node --test --experimental-test-coverage tests/*.test.mjs src/HomeKitDevice/HomeKitDevice.test.js src/HomeKitHistory/HomeKitHistory.test.js src/HomeKitUI/HomeKitUI.test.js",
         "check": "npm run lint && npm test && npm run build",

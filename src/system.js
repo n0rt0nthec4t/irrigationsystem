@@ -1593,7 +1593,10 @@ export default class IrrigationSystem extends HomeKitDevice {
     };
 
     let sprinklerIcon = () => {
-      return '<svg viewBox="0 0 24 24"><path d="M12 14v7"/><path d="M8 21h8"/><path d="M9 14h6"/><path d="M12 4v3"/><path d="M6 7l2 2"/><path d="M18 7l-2 2"/><path d="M4 12h3"/><path d="M20 12h-3"/></svg>';
+      return (
+        '<svg viewBox="0 0 24 24"><path d="M12 14v7"/><path d="M8 21h8"/><path d="M9 14h6"/>' +
+        '<path d="M12 4v3"/><path d="M6 7l2 2"/><path d="M18 7l-2 2"/><path d="M4 12h3"/><path d="M20 12h-3"/></svg>'
+      );
     };
 
     let checkIcon = () => {
@@ -1781,7 +1784,8 @@ export default class IrrigationSystem extends HomeKitDevice {
         html += '<div class="dashboard-summary-stat ' + leakStatus + '">';
         html +=
           this.leakDetected === true
-            ? '<svg viewBox="0 0 24 24"><path d="M12 3C12 3 6 10 6 14a6 6 0 0 0 12 0c0-4-6-11-6-11z"/><path d="M12 10v4"/><path d="M12 17h.01"/></svg>'
+            ? '<svg viewBox="0 0 24 24"><path d="M12 3C12 3 6 10 6 14a6 6 0 0 0 12 0c0-4-6-11-6-11z"/>' +
+              '<path d="M12 10v4"/><path d="M12 17h.01"/></svg>'
             : checkIcon();
         html += '<div>';
         html += '<div class="dashboard-summary-stat-title">Leak</div>';
@@ -2110,753 +2114,755 @@ export default class IrrigationSystem extends HomeKitDevice {
       return html;
     };
 
-    let css = `
-/* Dashboard layout */
-.irrigation-dashboard .dashboard-section,
-.irrigation-dashboard .dashboard-inner {
-  width: min(100%, 1180px);
-}
-
-.irrigation-dashboard .dashboard-lower-grid {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 28px;
-  align-items: start;
-}
-
-.irrigation-dashboard .dashboard-lower-grid > .dashboard-card {
-  margin-bottom: 0;
-}
-
-.irrigation-dashboard .dashboard-tanks-section .dashboard-section-title {
-  margin-top: 0;
-}
-
-/* Collapsible sections */
-.irrigation-dashboard .dashboard-collapse {
-  max-height: 0;
-  overflow: hidden;
-  opacity: 0;
-  transition: max-height 0.25s ease, opacity 0.2s ease;
-}
-
-.irrigation-dashboard .dashboard-collapse.open {
-  max-height: 2000px;
-  opacity: 1;
-}
-
-/* Zones list can grow freely */
-.irrigation-dashboard .dashboard-zones-list.dashboard-collapse.open {
-  max-height: none;
-  overflow: visible;
-}
-
-/* Common card system */
-.irrigation-dashboard .dashboard-card {
-  width: 100%;
-  max-width: none;
-  padding: 16px 22px;
-  margin-bottom: 34px;
-  border: 1px solid rgba(0,0,0,0.08);
-  border-radius: 12px;
-  background: var(--card, #fff);
-  box-sizing: border-box;
-}
-
-/* Common card header layout */
-.irrigation-dashboard .dashboard-card-header {
-  display: grid;
-  grid-template-columns: auto 1fr auto;
-  gap: 16px;
-  align-items: center;
-}
-
-.irrigation-dashboard .dashboard-card-text {
-  min-width: 0;
-}
-
-.irrigation-dashboard .dashboard-card-heading {
-  font-size: 15px;
-  font-weight: 700;
-  color: var(--text);
-}
-
-.irrigation-dashboard .dashboard-card-title {
-  margin-top: 4px;
-  font-size: 16px;
-  font-weight: 700;
-}
-
-.irrigation-dashboard .dashboard-card-sub {
-  margin-top: 5px;
-  font-size: 14px;
-  color: var(--muted);
-}
-
-/* Toggle button */
-.irrigation-dashboard .dashboard-collapse-toggle {
-  width: 28px;
-  height: 28px;
-  border: 0;
-  background: transparent;
-  cursor: pointer;
-  color: var(--muted);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.irrigation-dashboard .dashboard-collapse-toggle svg {
-  width: 20px;
-  height: 20px;
-  stroke: currentColor;
-  stroke-width: 2.5;
-  fill: none;
-  transition: transform 0.25s ease;
-}
-
-.irrigation-dashboard .dashboard-collapse-toggle.open svg {
-  transform: rotate(180deg);
-}
-
-/* Shared SVG icon styling */
-.irrigation-dashboard svg {
-  fill: none;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-.irrigation-dashboard .dashboard-power-button svg {
-  width: 26px;
-  height: 26px;
-  stroke-width: 2.6;
-}
-
-.irrigation-dashboard .dashboard-summary-stat svg {
-  width: 24px;
-  height: 24px;
-  color: #0f6fe8;
-  stroke-width: 2.2;
-  flex-shrink: 0;
-}
-
-.irrigation-dashboard .dashboard-zone-icon svg,
-.irrigation-dashboard .dashboard-zone-stat svg {
-  width: 18px;
-  height: 18px;
-  color: #0f6fe8;
-  stroke-width: 2.2;
-}
-
-/* System summary */
-.irrigation-dashboard .dashboard-summary-card {
-  margin-bottom: 36px;
-  border-color: rgba(49, 182, 75, 0.22);
-  background: rgba(148, 163, 184, 0.035);
-}
-
-.irrigation-dashboard .dashboard-summary-card.off {
-  border-color: rgba(148, 163, 184, 0.25);
-}
-
-.irrigation-dashboard .dashboard-summary-card .dashboard-card-title {
-  color: #2f7d43;
-}
-
-.irrigation-dashboard .dashboard-summary-card.off .dashboard-card-title {
-  color: #64748b;
-}
-
-.irrigation-dashboard .dashboard-summary-content {
-  display: grid;
-  grid-template-columns: 64px minmax(260px, 1fr) repeat(4, minmax(110px, auto));
-  gap: 20px;
-  align-items: center;
-}
-
-.irrigation-dashboard .dashboard-summary-stat {
-  min-height: 48px;
-  padding-left: 22px;
-  border-left: 1px solid rgba(0, 0, 0, 0.08);
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.irrigation-dashboard .dashboard-summary-stat-title {
-  color: var(--text);
-  font-size: 14px;
-  font-weight: 700;
-  line-height: 1.15;
-}
-
-.irrigation-dashboard .dashboard-summary-stat-value {
-  margin-top: 3px;
-  color: var(--muted);
-  font-size: 13px;
-  font-weight: 400;
-  line-height: 1.15;
-}
-
-/* Power button */
-.irrigation-dashboard .dashboard-power-button {
-  width: 52px;
-  height: 52px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition: background 0.2s ease, border-color 0.2s ease, transform 0.15s ease;
-}
-
-.irrigation-dashboard .dashboard-summary-card.off .dashboard-power-button {
-  border: 2px solid #94a3b8;
-  background: rgba(148, 163, 184, 0.08);
-  color: #64748b;
-}
-
-.irrigation-dashboard .dashboard-summary-card.on .dashboard-power-button {
-  border: 2px solid #2f7d43;
-  background: rgba(49, 182, 75, 0.08);
-  color: #2f7d43;
-}
-
-.irrigation-dashboard .dashboard-power-button:hover {
-  transform: translateY(-1px);
-}
-
-.irrigation-dashboard .dashboard-summary-card.off .dashboard-power-button:hover {
-  background: rgba(148, 163, 184, 0.14);
-}
-
-.irrigation-dashboard .dashboard-summary-card.on .dashboard-power-button:hover {
-  background: rgba(49, 182, 75, 0.16);
-}
-
-.irrigation-dashboard .dashboard-power-button:hover svg {
-  transform: scale(1.05);
-}
-
-/* Flow state in summary */
-.irrigation-dashboard .dashboard-flow-stat.active svg,
-.irrigation-dashboard .dashboard-flow-stat.active .dashboard-summary-stat-value {
-  color: #2f7d43;
-}
-
-.irrigation-dashboard .dashboard-flow-stat.alert svg,
-.irrigation-dashboard .dashboard-flow-stat.alert .dashboard-summary-stat-title,
-.irrigation-dashboard .dashboard-flow-stat.alert .dashboard-summary-stat-value {
-  color: #d94444;
-}
-
-/* Unexpected water usage in summary */
-.irrigation-dashboard .dashboard-water-used-stat.alert svg,
-.irrigation-dashboard .dashboard-water-used-stat.alert .dashboard-summary-stat-title,
-.irrigation-dashboard .dashboard-water-used-stat.alert .dashboard-summary-stat-value {
-  color: #d94444;
-}
-
-/* Leak alert state in summary */
-.irrigation-dashboard .dashboard-summary-stat.alert .dashboard-summary-stat-title,
-.irrigation-dashboard .dashboard-summary-stat.alert .dashboard-summary-stat-value,
-.irrigation-dashboard .dashboard-summary-stat.alert svg {
-  color: #d94444;
-}
-
-/* Zones */
-.irrigation-dashboard .dashboard-zones-card {
-  padding: 0;
-  overflow: hidden;
-}
-
-.irrigation-dashboard .dashboard-zones-header {
-  padding: 16px 22px;
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 16px;
-  align-items: center;
-  cursor: pointer;
-}
-
-.irrigation-dashboard .dashboard-zones-list {
-  border-top: 1px solid rgba(0,0,0,0.08);
-}
-
-.irrigation-dashboard .dashboard-zone-row {
-  display: grid;
-  grid-template-columns: 44px 1fr 130px 140px 110px;
-  gap: 14px;
-  align-items: center;
-  padding: 12px 22px;
-  border-top: 1px solid rgba(0,0,0,0.06);
-}
-
-.irrigation-dashboard .dashboard-zone-row.running {
-  background: rgba(15, 111, 232, 0.035);
-}
-
-.irrigation-dashboard .dashboard-zone-icon {
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  background: rgba(15,111,232,0.08);
-  border: 1px solid rgba(15,111,232,0.16);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.irrigation-dashboard .dashboard-zone-name {
-  font-weight: 700;
-}
-
-.irrigation-dashboard .dashboard-zone-meta {
-  margin-top: 3px;
-  font-size: 13px;
-  color: var(--muted);
-}
-
-.irrigation-dashboard .dashboard-zone-row.running .dashboard-zone-meta {
-  color: #0f6fe8;
-  font-weight: 700;
-}
-
-.irrigation-dashboard .dashboard-zone-stat {
-  display: flex;
-  gap: 7px;
-  font-size: 13px;
-  color: var(--muted);
-}
-
-.irrigation-dashboard .dashboard-zone-run,
-.irrigation-dashboard .dashboard-active-stop {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 6px 14px;
-  border-radius: 999px;
-  font-size: 13px;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.irrigation-dashboard .dashboard-zone-run {
-  border: 1px solid rgba(15,111,232,0.22);
-  background: rgba(15,111,232,0.045);
-  color: #0f6fe8;
-}
-
-.irrigation-dashboard .dashboard-active-stop {
-  border: 1px solid rgba(217,68,68,0.25);
-  background: rgba(217,68,68,0.05);
-  color: #d94444;
-}
-
-.irrigation-dashboard .dashboard-zone-active-details {
-  grid-column: 1 / -1;
-  padding-left: 58px;
-}
-
-.irrigation-dashboard .dashboard-active-progress {
-  height: 6px;
-  border-radius: 999px;
-  background: rgba(0,0,0,0.08);
-  overflow: hidden;
-  margin: 8px 0;
-}
-
-.irrigation-dashboard .dashboard-active-progress-fill {
-  height: 100%;
-  background: var(--accent);
-}
-  
-/* Water usage */
-.irrigation-dashboard .dashboard-usage-card {
-  max-width: none;
-}
-
-.irrigation-dashboard .dashboard-usage-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 22px;
-}
-
-.irrigation-dashboard .dashboard-usage-body[hidden] {
-  display: none;
-}
-
-.irrigation-dashboard .dashboard-usage-range {
-  height: 34px;
-  padding: 0 34px 0 12px;
-  border: 1px solid rgba(0,0,0,0.12);
-  border-radius: 8px;
-  background: var(--card, #fff);
-  color: var(--text);
-  font-size: 13px;
-  cursor: pointer;
-}
-
-.irrigation-dashboard .dashboard-usage-chart {
-  height: 210px;
-  display: grid;
-  grid-template-columns: repeat(7, 1fr);
-  gap: 14px;
-  align-items: end;
-  padding: 16px 0 8px;
-  border-bottom: 1px solid rgba(0,0,0,0.1);
-}
-
-.irrigation-dashboard .dashboard-usage-chart-14 {
-  grid-template-columns: repeat(14, 1fr);
-  gap: 8px;
-}
-
-.irrigation-dashboard .dashboard-usage-chart-30 {
-  grid-template-columns: repeat(30, 1fr);
-  gap: 5px;
-}
-
-.irrigation-dashboard .dashboard-usage-day {
-  height: 100%;
-  display: grid;
-  grid-template-rows: 22px 1fr auto auto;
-  gap: 6px;
-  text-align: center;
-  min-width: 0;
-}
-
-.irrigation-dashboard .dashboard-usage-value {
-  color: #0f6fe8;
-  font-size: 11px;
-  font-weight: 700;
-  white-space: nowrap;
-  margin-bottom: 4px;
-  height: 18px;
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
-}
-
-.irrigation-dashboard .dashboard-usage-bar-wrap {
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
-  min-height: 0;
-}
-
-.irrigation-dashboard .dashboard-usage-bar {
-  width: 34px;
-  min-height: 0;
-  border-radius: 5px 5px 0 0;
-  background: linear-gradient(180deg, #60a5fa 0%, #2563eb 100%);
-  box-shadow: 0 4px 10px rgba(37,99,235,0.18);
-  opacity: 0.9;
-}
-
-.irrigation-dashboard .dashboard-usage-chart-14 .dashboard-usage-bar {
-  width: 24px;
-}
-
-.irrigation-dashboard .dashboard-usage-chart-30 .dashboard-usage-day {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  justify-content: flex-end;
-  align-items: center;
-  text-align: center;
-  min-width: 0;
-}
-
-.irrigation-dashboard .dashboard-usage-chart-30 .dashboard-usage-bar-wrap {
-  flex: 1;
-  width: 100%;
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
-}
-
-.irrigation-dashboard .dashboard-usage-chart-30 .dashboard-usage-bar {
-  width: 16px;
-  border-radius: 4px 4px 0 0;
-}
-
-.irrigation-dashboard .dashboard-usage-bar:hover {
-  filter: brightness(1.1);
-}
-
-.irrigation-dashboard .dashboard-usage-day:last-child .dashboard-usage-bar {
-  box-shadow: 0 0 0 1px rgba(37,99,235,0.15);
-}
-
-.irrigation-dashboard .dashboard-usage-label {
-  color: var(--text);
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.irrigation-dashboard .dashboard-usage-date {
-  color: var(--muted);
-  font-size: 11px;
-}
-
-.irrigation-dashboard .dashboard-usage-chart-14 .dashboard-usage-label {
-  font-size: 11px;
-}
-
-.irrigation-dashboard .dashboard-usage-chart-14 .dashboard-usage-date {
-  font-size: 10px;
-}
-
-.irrigation-dashboard .dashboard-usage-chart-30 .dashboard-usage-value,
-.irrigation-dashboard .dashboard-usage-chart-30 .dashboard-usage-label {
-  display: none;
-}
-
-.irrigation-dashboard .dashboard-usage-chart-30 .dashboard-usage-date {
-  min-height: 14px;
-  color: var(--muted);
-  font-size: 9px;
-  white-space: nowrap;
-}
-
-.irrigation-dashboard .dashboard-usage-footer {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 18px;
-  padding-top: 18px;
-}
-
-.irrigation-dashboard .dashboard-usage-total,
-.irrigation-dashboard .dashboard-usage-average {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.irrigation-dashboard .dashboard-usage-average {
-  padding-left: 22px;
-  border-left: 1px solid rgba(0,0,0,0.08);
-}
-
-.irrigation-dashboard .dashboard-usage-footer svg {
-  width: 26px;
-  height: 26px;
-  color: #0f6fe8;
-  stroke-width: 2.2;
-  flex-shrink: 0;
-}
-
-.irrigation-dashboard .dashboard-usage-footer-label {
-  color: var(--muted);
-  font-size: 13px;
-}
-
-.irrigation-dashboard .dashboard-usage-footer-value {
-  margin-top: 3px;
-  color: var(--text);
-  font-size: 16px;
-  font-weight: 700;
-}
-
-/* Water tanks */
-.irrigation-dashboard .dashboard-tank-card {
-  width: 300px;
-  max-width: 100%;
-  padding: 20px 18px;
-  margin-bottom: 0;
-}
-
-.irrigation-dashboard .dashboard-tank-card .dashboard-card-heading {
-  font-size: 16px;
-  margin-bottom: 16px;
-}
-
-.irrigation-dashboard .dashboard-tank-body {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 26px;
-}
-
-.irrigation-dashboard .dashboard-tank-stats {
-  text-align: center;
-  min-width: 92px;
-}
-
-.irrigation-dashboard .dashboard-tank-percent {
-  color: #0f6fe8;
-  font-size: 28px;
-  line-height: 1;
-  font-weight: 700;
-}
-
-.irrigation-dashboard .dashboard-tank-litres {
-  margin-top: 8px;
-  font-size: 16px;
-  font-weight: 700;
-}
-
-.irrigation-dashboard .dashboard-tank-capacity,
-.irrigation-dashboard .dashboard-tank-empty-label,
-.irrigation-dashboard .dashboard-tank-updated {
-  margin-top: 3px;
-  color: var(--muted);
-  font-size: 14px;
-}
-
-.irrigation-dashboard .dashboard-tank-updated {
-  margin-top: 8px;
-  font-size: 13px;
-}
-
-.irrigation-dashboard .dashboard-tank-updated.stale {
-  color: #f59e0b;
-}
-
-.irrigation-dashboard .tank-graphic {
-  position: relative;
-  width: 92px;
-  height: 118px;
-  border: 2px solid #94a3b8;
-  border-radius: 50% / 12%;
-  overflow: hidden;
-  background: linear-gradient(180deg, #f8fafc 0%, #eef2f7 100%);
-}
-
-.irrigation-dashboard .tank-graphic::before {
-  content: '';
-  position: absolute;
-  left: -2px;
-  right: -2px;
-  top: -2px;
-  height: 22px;
-  border: 2px solid #94a3b8;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.72);
-  z-index: 4;
-}
-
-.irrigation-dashboard .tank-fill {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: linear-gradient(180deg, #93c5fd 0%, #3b82f6 60%, #1d4ed8 100%);
-  transition: height 0.4s ease;
-}
-
-.irrigation-dashboard .tank-fill.tank-empty {
-  opacity: 0.35;
-  background: linear-gradient(180deg, #93c5fd 0%, #60a5fa 100%);
-}
-
-.irrigation-dashboard .tank-fill::before {
-  content: '';
-  position: absolute;
-  left: -4%;
-  right: -4%;
-  top: -8px;
-  height: 16px;
-  border-radius: 50%;
-  background: rgba(147, 197, 253, 0.6);
-}
-
-.irrigation-dashboard .tank-shine {
-  position: absolute;
-  inset: 10px auto 12px 14px;
-  width: 20px;
-  border-radius: 999px;
-  background: linear-gradient(180deg, rgba(255,255,255,0.42), rgba(255,255,255,0.04));
-  z-index: 4;
-}
-
-/* Section spacing */
-.irrigation-dashboard .dashboard-section-title {
-  margin: 28px 0 14px;
-}
-
-.irrigation-dashboard .dashboard-section-title .card-title {
-  font-size: 18px;
-  font-weight: 700;
-}
-
-.irrigation-dashboard .dashboard-section-title .list-sub {
-  font-size: 14px;
-  margin-top: 4px;
-}
-
-.irrigation-dashboard .dashboard-zones-card,
-.irrigation-dashboard .dashboard-tank-grid {
-  margin-bottom: 36px;
-}
-
-.irrigation-dashboard .dashboard-tank-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, 300px);
-  gap: 18px;
-  justify-content: start;
-  margin-top: 10px;
-}
-
-/* Responsive */
-@media (max-width: 1100px) {
-  .irrigation-dashboard .dashboard-lower-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
-@media (max-width: 900px) {
-  .irrigation-dashboard .dashboard-summary-content {
-    grid-template-columns: 64px 1fr;
-  }
-
-  .irrigation-dashboard .dashboard-summary-stat {
-    grid-column: 1 / -1;
-    padding-left: 0;
-    border-left: 0;
-  }
-
-  .irrigation-dashboard .dashboard-zone-row {
-    grid-template-columns: 44px 1fr;
-  }
-
-  .irrigation-dashboard .dashboard-zone-stat,
-  .irrigation-dashboard .dashboard-zone-run,
-  .irrigation-dashboard .dashboard-active-stop {
-    grid-column: 1 / -1;
-  }
-
-  .irrigation-dashboard .dashboard-zone-active-details {
-    padding-left: 0;
-  }
-
-  .irrigation-dashboard .dashboard-usage-card {
-    max-width: none;
-  }
-
-  .irrigation-dashboard .dashboard-usage-chart {
-    gap: 8px;
-  }
-
-  .irrigation-dashboard .dashboard-usage-bar {
-    width: 24px;
-  }
-
-  .irrigation-dashboard .dashboard-usage-footer {
-    grid-template-columns: 1fr;
-  }
-
-  .irrigation-dashboard .dashboard-usage-average {
-    padding-left: 0;
-    border-left: 0;
-  }
-}
-`;
+    let css = [
+      '',
+      '/* Dashboard layout */',
+      '.irrigation-dashboard .dashboard-section,',
+      '.irrigation-dashboard .dashboard-inner {',
+      '  width: min(100%, 1180px);',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-lower-grid {',
+      '  display: grid;',
+      '  grid-template-columns: 1fr;',
+      '  gap: 28px;',
+      '  align-items: start;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-lower-grid > .dashboard-card {',
+      '  margin-bottom: 0;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-tanks-section .dashboard-section-title {',
+      '  margin-top: 0;',
+      '}',
+      '',
+      '/* Collapsible sections */',
+      '.irrigation-dashboard .dashboard-collapse {',
+      '  max-height: 0;',
+      '  overflow: hidden;',
+      '  opacity: 0;',
+      '  transition: max-height 0.25s ease, opacity 0.2s ease;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-collapse.open {',
+      '  max-height: 2000px;',
+      '  opacity: 1;',
+      '}',
+      '',
+      '/* Zones list can grow freely */',
+      '.irrigation-dashboard .dashboard-zones-list.dashboard-collapse.open {',
+      '  max-height: none;',
+      '  overflow: visible;',
+      '}',
+      '',
+      '/* Common card system */',
+      '.irrigation-dashboard .dashboard-card {',
+      '  width: 100%;',
+      '  max-width: none;',
+      '  padding: 16px 22px;',
+      '  margin-bottom: 34px;',
+      '  border: 1px solid rgba(0,0,0,0.08);',
+      '  border-radius: 12px;',
+      '  background: var(--card, #fff);',
+      '  box-sizing: border-box;',
+      '}',
+      '',
+      '/* Common card header layout */',
+      '.irrigation-dashboard .dashboard-card-header {',
+      '  display: grid;',
+      '  grid-template-columns: auto 1fr auto;',
+      '  gap: 16px;',
+      '  align-items: center;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-card-text {',
+      '  min-width: 0;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-card-heading {',
+      '  font-size: 15px;',
+      '  font-weight: 700;',
+      '  color: var(--text);',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-card-title {',
+      '  margin-top: 4px;',
+      '  font-size: 16px;',
+      '  font-weight: 700;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-card-sub {',
+      '  margin-top: 5px;',
+      '  font-size: 14px;',
+      '  color: var(--muted);',
+      '}',
+      '',
+      '/* Toggle button */',
+      '.irrigation-dashboard .dashboard-collapse-toggle {',
+      '  width: 28px;',
+      '  height: 28px;',
+      '  border: 0;',
+      '  background: transparent;',
+      '  cursor: pointer;',
+      '  color: var(--muted);',
+      '  display: flex;',
+      '  align-items: center;',
+      '  justify-content: center;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-collapse-toggle svg {',
+      '  width: 20px;',
+      '  height: 20px;',
+      '  stroke: currentColor;',
+      '  stroke-width: 2.5;',
+      '  fill: none;',
+      '  transition: transform 0.25s ease;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-collapse-toggle.open svg {',
+      '  transform: rotate(180deg);',
+      '}',
+      '',
+      '/* Shared SVG icon styling */',
+      '.irrigation-dashboard svg {',
+      '  fill: none;',
+      '  stroke: currentColor;',
+      '  stroke-linecap: round;',
+      '  stroke-linejoin: round;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-power-button svg {',
+      '  width: 26px;',
+      '  height: 26px;',
+      '  stroke-width: 2.6;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-summary-stat svg {',
+      '  width: 24px;',
+      '  height: 24px;',
+      '  color: #0f6fe8;',
+      '  stroke-width: 2.2;',
+      '  flex-shrink: 0;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-zone-icon svg,',
+      '.irrigation-dashboard .dashboard-zone-stat svg {',
+      '  width: 18px;',
+      '  height: 18px;',
+      '  color: #0f6fe8;',
+      '  stroke-width: 2.2;',
+      '}',
+      '',
+      '/* System summary */',
+      '.irrigation-dashboard .dashboard-summary-card {',
+      '  margin-bottom: 36px;',
+      '  border-color: rgba(49, 182, 75, 0.22);',
+      '  background: rgba(148, 163, 184, 0.035);',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-summary-card.off {',
+      '  border-color: rgba(148, 163, 184, 0.25);',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-summary-card .dashboard-card-title {',
+      '  color: #2f7d43;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-summary-card.off .dashboard-card-title {',
+      '  color: #64748b;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-summary-content {',
+      '  display: grid;',
+      '  grid-template-columns: 64px minmax(260px, 1fr) repeat(4, minmax(110px, auto));',
+      '  gap: 20px;',
+      '  align-items: center;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-summary-stat {',
+      '  min-height: 48px;',
+      '  padding-left: 22px;',
+      '  border-left: 1px solid rgba(0, 0, 0, 0.08);',
+      '  display: flex;',
+      '  align-items: center;',
+      '  gap: 10px;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-summary-stat-title {',
+      '  color: var(--text);',
+      '  font-size: 14px;',
+      '  font-weight: 700;',
+      '  line-height: 1.15;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-summary-stat-value {',
+      '  margin-top: 3px;',
+      '  color: var(--muted);',
+      '  font-size: 13px;',
+      '  font-weight: 400;',
+      '  line-height: 1.15;',
+      '}',
+      '',
+      '/* Power button */',
+      '.irrigation-dashboard .dashboard-power-button {',
+      '  width: 52px;',
+      '  height: 52px;',
+      '  border-radius: 50%;',
+      '  display: flex;',
+      '  align-items: center;',
+      '  justify-content: center;',
+      '  cursor: pointer;',
+      '  transition: background 0.2s ease, border-color 0.2s ease, transform 0.15s ease;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-summary-card.off .dashboard-power-button {',
+      '  border: 2px solid #94a3b8;',
+      '  background: rgba(148, 163, 184, 0.08);',
+      '  color: #64748b;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-summary-card.on .dashboard-power-button {',
+      '  border: 2px solid #2f7d43;',
+      '  background: rgba(49, 182, 75, 0.08);',
+      '  color: #2f7d43;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-power-button:hover {',
+      '  transform: translateY(-1px);',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-summary-card.off .dashboard-power-button:hover {',
+      '  background: rgba(148, 163, 184, 0.14);',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-summary-card.on .dashboard-power-button:hover {',
+      '  background: rgba(49, 182, 75, 0.16);',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-power-button:hover svg {',
+      '  transform: scale(1.05);',
+      '}',
+      '',
+      '/* Flow state in summary */',
+      '.irrigation-dashboard .dashboard-flow-stat.active svg,',
+      '.irrigation-dashboard .dashboard-flow-stat.active .dashboard-summary-stat-value {',
+      '  color: #2f7d43;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-flow-stat.alert svg,',
+      '.irrigation-dashboard .dashboard-flow-stat.alert .dashboard-summary-stat-title,',
+      '.irrigation-dashboard .dashboard-flow-stat.alert .dashboard-summary-stat-value {',
+      '  color: #d94444;',
+      '}',
+      '',
+      '/* Unexpected water usage in summary */',
+      '.irrigation-dashboard .dashboard-water-used-stat.alert svg,',
+      '.irrigation-dashboard .dashboard-water-used-stat.alert .dashboard-summary-stat-title,',
+      '.irrigation-dashboard .dashboard-water-used-stat.alert .dashboard-summary-stat-value {',
+      '  color: #d94444;',
+      '}',
+      '',
+      '/* Leak alert state in summary */',
+      '.irrigation-dashboard .dashboard-summary-stat.alert .dashboard-summary-stat-title,',
+      '.irrigation-dashboard .dashboard-summary-stat.alert .dashboard-summary-stat-value,',
+      '.irrigation-dashboard .dashboard-summary-stat.alert svg {',
+      '  color: #d94444;',
+      '}',
+      '',
+      '/* Zones */',
+      '.irrigation-dashboard .dashboard-zones-card {',
+      '  padding: 0;',
+      '  overflow: hidden;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-zones-header {',
+      '  padding: 16px 22px;',
+      '  display: grid;',
+      '  grid-template-columns: 1fr auto;',
+      '  gap: 16px;',
+      '  align-items: center;',
+      '  cursor: pointer;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-zones-list {',
+      '  border-top: 1px solid rgba(0,0,0,0.08);',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-zone-row {',
+      '  display: grid;',
+      '  grid-template-columns: 44px 1fr 130px 140px 110px;',
+      '  gap: 14px;',
+      '  align-items: center;',
+      '  padding: 12px 22px;',
+      '  border-top: 1px solid rgba(0,0,0,0.06);',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-zone-row.running {',
+      '  background: rgba(15, 111, 232, 0.035);',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-zone-icon {',
+      '  width: 32px;',
+      '  height: 32px;',
+      '  border-radius: 50%;',
+      '  background: rgba(15,111,232,0.08);',
+      '  border: 1px solid rgba(15,111,232,0.16);',
+      '  display: flex;',
+      '  align-items: center;',
+      '  justify-content: center;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-zone-name {',
+      '  font-weight: 700;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-zone-meta {',
+      '  margin-top: 3px;',
+      '  font-size: 13px;',
+      '  color: var(--muted);',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-zone-row.running .dashboard-zone-meta {',
+      '  color: #0f6fe8;',
+      '  font-weight: 700;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-zone-stat {',
+      '  display: flex;',
+      '  gap: 7px;',
+      '  font-size: 13px;',
+      '  color: var(--muted);',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-zone-run,',
+      '.irrigation-dashboard .dashboard-active-stop {',
+      '  display: inline-flex;',
+      '  align-items: center;',
+      '  justify-content: center;',
+      '  gap: 6px;',
+      '  padding: 6px 14px;',
+      '  border-radius: 999px;',
+      '  font-size: 13px;',
+      '  font-weight: 700;',
+      '  cursor: pointer;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-zone-run {',
+      '  border: 1px solid rgba(15,111,232,0.22);',
+      '  background: rgba(15,111,232,0.045);',
+      '  color: #0f6fe8;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-active-stop {',
+      '  border: 1px solid rgba(217,68,68,0.25);',
+      '  background: rgba(217,68,68,0.05);',
+      '  color: #d94444;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-zone-active-details {',
+      '  grid-column: 1 / -1;',
+      '  padding-left: 58px;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-active-progress {',
+      '  height: 6px;',
+      '  border-radius: 999px;',
+      '  background: rgba(0,0,0,0.08);',
+      '  overflow: hidden;',
+      '  margin: 8px 0;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-active-progress-fill {',
+      '  height: 100%;',
+      '  background: var(--accent);',
+      '}',
+      '  ',
+      '/* Water usage */',
+      '.irrigation-dashboard .dashboard-usage-card {',
+      '  max-width: none;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-usage-header {',
+      '  display: flex;',
+      '  align-items: flex-start;',
+      '  justify-content: space-between;',
+      '  gap: 16px;',
+      '  margin-bottom: 22px;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-usage-body[hidden] {',
+      '  display: none;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-usage-range {',
+      '  height: 34px;',
+      '  padding: 0 34px 0 12px;',
+      '  border: 1px solid rgba(0,0,0,0.12);',
+      '  border-radius: 8px;',
+      '  background: var(--card, #fff);',
+      '  color: var(--text);',
+      '  font-size: 13px;',
+      '  cursor: pointer;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-usage-chart {',
+      '  height: 210px;',
+      '  display: grid;',
+      '  grid-template-columns: repeat(7, 1fr);',
+      '  gap: 14px;',
+      '  align-items: end;',
+      '  padding: 16px 0 8px;',
+      '  border-bottom: 1px solid rgba(0,0,0,0.1);',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-usage-chart-14 {',
+      '  grid-template-columns: repeat(14, 1fr);',
+      '  gap: 8px;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-usage-chart-30 {',
+      '  grid-template-columns: repeat(30, 1fr);',
+      '  gap: 5px;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-usage-day {',
+      '  height: 100%;',
+      '  display: grid;',
+      '  grid-template-rows: 22px 1fr auto auto;',
+      '  gap: 6px;',
+      '  text-align: center;',
+      '  min-width: 0;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-usage-value {',
+      '  color: #0f6fe8;',
+      '  font-size: 11px;',
+      '  font-weight: 700;',
+      '  white-space: nowrap;',
+      '  margin-bottom: 4px;',
+      '  height: 18px;',
+      '  display: flex;',
+      '  align-items: flex-end;',
+      '  justify-content: center;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-usage-bar-wrap {',
+      '  display: flex;',
+      '  align-items: flex-end;',
+      '  justify-content: center;',
+      '  min-height: 0;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-usage-bar {',
+      '  width: 34px;',
+      '  min-height: 0;',
+      '  border-radius: 5px 5px 0 0;',
+      '  background: linear-gradient(180deg, #60a5fa 0%, #2563eb 100%);',
+      '  box-shadow: 0 4px 10px rgba(37,99,235,0.18);',
+      '  opacity: 0.9;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-usage-chart-14 .dashboard-usage-bar {',
+      '  width: 24px;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-usage-chart-30 .dashboard-usage-day {',
+      '  height: 100%;',
+      '  display: flex;',
+      '  flex-direction: column;',
+      '  justify-content: flex-end;',
+      '  align-items: center;',
+      '  text-align: center;',
+      '  min-width: 0;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-usage-chart-30 .dashboard-usage-bar-wrap {',
+      '  flex: 1;',
+      '  width: 100%;',
+      '  display: flex;',
+      '  align-items: flex-end;',
+      '  justify-content: center;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-usage-chart-30 .dashboard-usage-bar {',
+      '  width: 16px;',
+      '  border-radius: 4px 4px 0 0;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-usage-bar:hover {',
+      '  filter: brightness(1.1);',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-usage-day:last-child .dashboard-usage-bar {',
+      '  box-shadow: 0 0 0 1px rgba(37,99,235,0.15);',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-usage-label {',
+      '  color: var(--text);',
+      '  font-size: 13px;',
+      '  font-weight: 600;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-usage-date {',
+      '  color: var(--muted);',
+      '  font-size: 11px;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-usage-chart-14 .dashboard-usage-label {',
+      '  font-size: 11px;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-usage-chart-14 .dashboard-usage-date {',
+      '  font-size: 10px;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-usage-chart-30 .dashboard-usage-value,',
+      '.irrigation-dashboard .dashboard-usage-chart-30 .dashboard-usage-label {',
+      '  display: none;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-usage-chart-30 .dashboard-usage-date {',
+      '  min-height: 14px;',
+      '  color: var(--muted);',
+      '  font-size: 9px;',
+      '  white-space: nowrap;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-usage-footer {',
+      '  display: grid;',
+      '  grid-template-columns: 1fr 1fr;',
+      '  gap: 18px;',
+      '  padding-top: 18px;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-usage-total,',
+      '.irrigation-dashboard .dashboard-usage-average {',
+      '  display: flex;',
+      '  align-items: center;',
+      '  gap: 12px;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-usage-average {',
+      '  padding-left: 22px;',
+      '  border-left: 1px solid rgba(0,0,0,0.08);',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-usage-footer svg {',
+      '  width: 26px;',
+      '  height: 26px;',
+      '  color: #0f6fe8;',
+      '  stroke-width: 2.2;',
+      '  flex-shrink: 0;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-usage-footer-label {',
+      '  color: var(--muted);',
+      '  font-size: 13px;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-usage-footer-value {',
+      '  margin-top: 3px;',
+      '  color: var(--text);',
+      '  font-size: 16px;',
+      '  font-weight: 700;',
+      '}',
+      '',
+      '/* Water tanks */',
+      '.irrigation-dashboard .dashboard-tank-card {',
+      '  width: 300px;',
+      '  max-width: 100%;',
+      '  padding: 20px 18px;',
+      '  margin-bottom: 0;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-tank-card .dashboard-card-heading {',
+      '  font-size: 16px;',
+      '  margin-bottom: 16px;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-tank-body {',
+      '  display: flex;',
+      '  align-items: center;',
+      '  justify-content: center;',
+      '  gap: 26px;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-tank-stats {',
+      '  text-align: center;',
+      '  min-width: 92px;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-tank-percent {',
+      '  color: #0f6fe8;',
+      '  font-size: 28px;',
+      '  line-height: 1;',
+      '  font-weight: 700;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-tank-litres {',
+      '  margin-top: 8px;',
+      '  font-size: 16px;',
+      '  font-weight: 700;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-tank-capacity,',
+      '.irrigation-dashboard .dashboard-tank-empty-label,',
+      '.irrigation-dashboard .dashboard-tank-updated {',
+      '  margin-top: 3px;',
+      '  color: var(--muted);',
+      '  font-size: 14px;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-tank-updated {',
+      '  margin-top: 8px;',
+      '  font-size: 13px;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-tank-updated.stale {',
+      '  color: #f59e0b;',
+      '}',
+      '',
+      '.irrigation-dashboard .tank-graphic {',
+      '  position: relative;',
+      '  width: 92px;',
+      '  height: 118px;',
+      '  border: 2px solid #94a3b8;',
+      '  border-radius: 50% / 12%;',
+      '  overflow: hidden;',
+      '  background: linear-gradient(180deg, #f8fafc 0%, #eef2f7 100%);',
+      '}',
+      '',
+      '.irrigation-dashboard .tank-graphic::before {',
+      '  content: \'\';',
+      '  position: absolute;',
+      '  left: -2px;',
+      '  right: -2px;',
+      '  top: -2px;',
+      '  height: 22px;',
+      '  border: 2px solid #94a3b8;',
+      '  border-radius: 50%;',
+      '  background: rgba(255, 255, 255, 0.72);',
+      '  z-index: 4;',
+      '}',
+      '',
+      '.irrigation-dashboard .tank-fill {',
+      '  position: absolute;',
+      '  left: 0;',
+      '  right: 0;',
+      '  bottom: 0;',
+      '  background: linear-gradient(180deg, #93c5fd 0%, #3b82f6 60%, #1d4ed8 100%);',
+      '  transition: height 0.4s ease;',
+      '}',
+      '',
+      '.irrigation-dashboard .tank-fill.tank-empty {',
+      '  opacity: 0.35;',
+      '  background: linear-gradient(180deg, #93c5fd 0%, #60a5fa 100%);',
+      '}',
+      '',
+      '.irrigation-dashboard .tank-fill::before {',
+      '  content: \'\';',
+      '  position: absolute;',
+      '  left: -4%;',
+      '  right: -4%;',
+      '  top: -8px;',
+      '  height: 16px;',
+      '  border-radius: 50%;',
+      '  background: rgba(147, 197, 253, 0.6);',
+      '}',
+      '',
+      '.irrigation-dashboard .tank-shine {',
+      '  position: absolute;',
+      '  inset: 10px auto 12px 14px;',
+      '  width: 20px;',
+      '  border-radius: 999px;',
+      '  background: linear-gradient(180deg, rgba(255,255,255,0.42), rgba(255,255,255,0.04));',
+      '  z-index: 4;',
+      '}',
+      '',
+      '/* Section spacing */',
+      '.irrigation-dashboard .dashboard-section-title {',
+      '  margin: 28px 0 14px;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-section-title .card-title {',
+      '  font-size: 18px;',
+      '  font-weight: 700;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-section-title .list-sub {',
+      '  font-size: 14px;',
+      '  margin-top: 4px;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-zones-card,',
+      '.irrigation-dashboard .dashboard-tank-grid {',
+      '  margin-bottom: 36px;',
+      '}',
+      '',
+      '.irrigation-dashboard .dashboard-tank-grid {',
+      '  display: grid;',
+      '  grid-template-columns: repeat(auto-fill, 300px);',
+      '  gap: 18px;',
+      '  justify-content: start;',
+      '  margin-top: 10px;',
+      '}',
+      '',
+      '/* Responsive */',
+      '@media (max-width: 1100px) {',
+      '  .irrigation-dashboard .dashboard-lower-grid {',
+      '    grid-template-columns: 1fr;',
+      '  }',
+      '}',
+      '',
+      '@media (max-width: 900px) {',
+      '  .irrigation-dashboard .dashboard-summary-content {',
+      '    grid-template-columns: 64px 1fr;',
+      '  }',
+      '',
+      '  .irrigation-dashboard .dashboard-summary-stat {',
+      '    grid-column: 1 / -1;',
+      '    padding-left: 0;',
+      '    border-left: 0;',
+      '  }',
+      '',
+      '  .irrigation-dashboard .dashboard-zone-row {',
+      '    grid-template-columns: 44px 1fr;',
+      '  }',
+      '',
+      '  .irrigation-dashboard .dashboard-zone-stat,',
+      '  .irrigation-dashboard .dashboard-zone-run,',
+      '  .irrigation-dashboard .dashboard-active-stop {',
+      '    grid-column: 1 / -1;',
+      '  }',
+      '',
+      '  .irrigation-dashboard .dashboard-zone-active-details {',
+      '    padding-left: 0;',
+      '  }',
+      '',
+      '  .irrigation-dashboard .dashboard-usage-card {',
+      '    max-width: none;',
+      '  }',
+      '',
+      '  .irrigation-dashboard .dashboard-usage-chart {',
+      '    gap: 8px;',
+      '  }',
+      '',
+      '  .irrigation-dashboard .dashboard-usage-bar {',
+      '    width: 24px;',
+      '  }',
+      '',
+      '  .irrigation-dashboard .dashboard-usage-footer {',
+      '    grid-template-columns: 1fr;',
+      '  }',
+      '',
+      '  .irrigation-dashboard .dashboard-usage-average {',
+      '    padding-left: 0;',
+      '    border-left: 0;',
+      '  }',
+      '}',
+      '',
+    ].join('\n');
 
     let html = '';
 

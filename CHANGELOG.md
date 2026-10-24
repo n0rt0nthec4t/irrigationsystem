@@ -22,6 +22,7 @@ All notable changes to `irrigationsystem` will be documented in this file. This 
 
 ### Changed
 
+- Scoped application linting to project-owned source, tests, and build scripts, matching the formatter
 - Replaced copyfiles and rimraf build dependencies with Node.js build and clean scripts
 
 ## v0.0.8 (2026/10/11)
