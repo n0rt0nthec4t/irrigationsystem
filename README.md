@@ -25,6 +25,34 @@ Homebridge is not required.
 The system is installed externally. Keep mains wiring and the 240 V to 24 V
 transformer isolated in a separate enclosure.
 
+## GPIO Access
+
+The irrigation controller uses `/dev/gpiomem` for GPIO access. Its `rpio` GPIO
+access can run without root when the service user belongs to the `gpio` group
+and has read/write permission on that device. Configuring group membership or
+udev permissions requires administrator access. See the
+[rpio GPIO access requirements](https://github.com/jperkin/node-rpio#enable-devgpiomem-access).
+
+The `rpio` library also requires GPIO interrupts to be disabled on newer Raspberry
+Pi OS kernels to avoid crashes when polling pins. This controller uses polling
+for flow sensors and the ultrasonic GPIO fallback. Add the following line to the
+boot configuration and reboot:
+
+```ini
+dtoverlay=gpio-no-irq
+```
+
+Use `/boot/firmware/config.txt` on current Raspberry Pi OS releases, or
+`/boot/config.txt` on older releases. Editing this file requires administrator
+access. The overlay controls GPIO interrupts; device permissions control whether
+the application can run without root. See the
+[rpio interrupt requirements](https://github.com/jperkin/node-rpio#disable-gpio-interrupts)
+and [Raspberry Pi boot configuration documentation](https://www.raspberrypi.com/documentation/computers/config_txt.html).
+
+The optional `usonic_measure` helper uses wiringPi rather than `rpio`. Check that
+the service user can also access GPIO through that helper before running the
+complete application without root.
+
 ## Irrigation System Configuration
 
 Configure the **zones**, **tanks** and **options** entries in

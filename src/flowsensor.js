@@ -25,14 +25,13 @@
 // - GPIO library must be assigned to FlowSensor.GPIO before use
 // - Valid GPIO pin required
 //
-// Code version 2026.10.11
+// Code version 2026.10.24
 // Mark Hulskamp
 'use strict';
 
 // Define nodejs module requirements
 import crypto from 'node:crypto';
 import { setInterval, clearInterval } from 'node:timers';
-import { performance } from 'node:perf_hooks';
 
 // Import our modules
 import HomeKitDevice from './HomeKitDevice.js';
@@ -52,8 +51,6 @@ export default class FlowSensor {
   #sensorPin;
   #targets = new Set();
   #pulseCounter = 0;
-  #lastPulseTime = 0;
-  #minimumPulseGap = 20; // ms
   #lastFlowTime = Date.now();
   #flowRate = 0;
   #timer;
@@ -94,7 +91,6 @@ export default class FlowSensor {
         // Reset runtime state before attaching to the new pin.
         this.#sensorPin = undefined;
         this.#pulseCounter = 0;
-        this.#lastPulseTime = 0;
         this.#flowData = [];
         this.#lastFlowTime = Date.now();
         this.#lastExpectedFlowTime = 0;
@@ -205,7 +201,6 @@ export default class FlowSensor {
 
     sensor.#sensorPin = undefined;
     sensor.#pulseCounter = 0;
-    sensor.#lastPulseTime = 0;
     sensor.#flowData = [];
     sensor.#lastExpectedFlowTime = 0;
     sensor.#leakDetected = false;
@@ -327,13 +322,8 @@ export default class FlowSensor {
     FlowSensor.GPIO.poll(
       this.#sensorPin,
       () => {
-        let now = performance.now();
-
-        if (now - this.#lastPulseTime < this.#minimumPulseGap) {
-          return;
-        }
-
-        this.#lastPulseTime = now;
+        // Count every rising edge. A time gate drops valid high-frequency sensor
+        // pulses (the FL-808 reaches 288 Hz at its rated 60 L/min).
         this.#pulseCounter++;
       },
       FlowSensor.GPIO.POLL_HIGH,

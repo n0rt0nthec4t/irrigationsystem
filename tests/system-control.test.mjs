@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { syncBuiltinESMExports } from 'node:module';
 import { performance } from 'node:perf_hooks';
+import { format } from 'node:util';
 import HAP from '@homebridge/hap-nodejs';
 import GPIO from 'rpio';
 import IrrigationSystem from '../dist/system.js';
@@ -126,6 +127,98 @@ test('pending pulses are saved at stop and cannot move into the next run', async
   f.system.setZoneActive(f.zone, false);
   await settle();
   assert.equal(f.history.filter((sample) => sample.entry.status === 0).at(-1).entry.water, 0);
+});
+
+test('a virtual zone accumulates flow across both relays and completes only once', async (t) => {
+  const f = fixture(t, {
+    sensorFlowPin: 17,
+    flowRate: 0.964,
+    zones: [
+      { uuid: 'first', name: 'First relay', enabled: true, runtime: 10, relayPin: 18 },
+      { uuid: 'second', name: 'Second relay', enabled: true, runtime: 10, relayPin: 23 },
+      { uuid: 'virtual', name: 'Front Lawn', enabled: true, runtime: 10, relayPin: [18, 23] },
+    ],
+  });
+  const zone = f.system.deviceData.zones[2];
+  const logs = [];
+  f.system.log = { info: (...args) => logs.push(format(...args)) };
+  f.system.setZoneActive(zone, true);
+  await settle();
+  assert.equal(f.pins.get(18), GPIO.HIGH);
+  assert.equal(f.pins.get(23), GPIO.LOW);
+
+  // Deliver mocked GPIO pulses through the sensor and message bus on both sides of
+  // the halfway relay change, including a pending pulse at the final stop.
+  for (let second = 0; second < 10; second++) {
+    t.mock.timers.tick(25);
+    f.polls.get(17)(17);
+    t.mock.timers.tick(975);
+    await settle();
+    if (second === 4) {
+      assert.equal(f.pins.get(18), GPIO.LOW);
+      assert.equal(f.pins.get(23), GPIO.HIGH);
+      assert.equal(f.history.filter((sample) => sample.entry.status === 0).length, 0);
+    }
+  }
+
+  const completed = f.history.filter((sample) => sample.entry.status === 0);
+  assert.equal(completed.length, 1);
+  assert.ok(Math.abs(completed[0].entry.water - (10 * 0.964) / 60) < 1e-12);
+  assert.equal(completed[0].entry.duration, 10);
+  assert.equal(f.pins.get(18), GPIO.LOW);
+  assert.equal(f.pins.get(23), GPIO.LOW);
+  assert.equal(logs.at(-1), 'Zone "Front Lawn" was turned "off" after 0m 10s using ' + (0.161).toLocaleString() + 'L');
+});
+
+test('completion logs keep tiny positive measurements distinct from zero', async (t) => {
+  const f = fixture(t, { sensorFlowPin: 17, flowRate: 0.001 });
+  const logs = [];
+  f.system.log = { info: (...args) => logs.push(format(...args)) };
+  f.system.setZoneActive(f.zone, true);
+  t.mock.timers.tick(25);
+  f.polls.get(17)(17);
+  f.system.setZoneActive(f.zone, false);
+  await settle();
+  assert.equal(logs.at(-1), 'Zone "Zone" was turned "off" after 0m 0s using <0.001L');
+  assert.equal(f.history.find((sample) => sample.entry.status === 0).entry.water, 0.001 / 60);
+});
+
+test('an hour-long virtual zone retains approximately 400 litres at seven pulses per second', async (t) => {
+  const f = fixture(t, {
+    sensorFlowPin: 17,
+    flowRate: 0.964,
+    leakSensor: true,
+    zones: [{ uuid: 'zone', name: 'Front Lawn', enabled: true, runtime: 3600, relayPin: [18, 23] }],
+  });
+  f.system.setZoneActive(f.zone, true);
+  await settle();
+  for (let second = 0; second < 3600; second++) {
+    for (let pulse = 0; pulse < 7; pulse++) {
+      t.mock.timers.tick(140);
+      f.polls.get(17)(17);
+    }
+    t.mock.timers.tick(20);
+    await settle();
+    if (second === 209) {
+      // Check the live HTML before completion, at the same point as the
+      // reported failure: flow and accumulated litres must already be visible.
+      const html = f.system.getDashboard().html;
+      assert.match(html, /<span>6\.7 L\/min<\/span>/);
+      assert.match(html, /<span>24 L<\/span>/);
+      assert.match(html, /Currently running/);
+    }
+    if (second === 1799) {
+      assert.equal(f.pins.get(18), GPIO.LOW);
+      assert.equal(f.pins.get(23), GPIO.HIGH);
+      assert.equal(f.history.filter((sample) => sample.entry.status === 0).length, 0);
+    }
+  }
+  const completed = f.history.filter((sample) => sample.entry.status === 0);
+  assert.equal(completed.length, 1);
+  assert.equal(completed[0].entry.duration, 3600);
+  assert.ok(Math.abs(completed[0].entry.water - 404.88) < 1e-8);
+  assert.equal(f.pins.get(18), GPIO.LOW);
+  assert.equal(f.pins.get(23), GPIO.LOW);
 });
 
 test('device shutdown closes the active run and saves final pulses before sensor teardown', async (t) => {
@@ -280,6 +373,44 @@ test('switching zones assigns each boundary sample to its originating run', asyn
   assert.equal(completed.length, 2);
   assert.ok(Math.abs(completed[0].entry.water - 5 / 60) < 1e-12);
   assert.ok(Math.abs(completed[1].entry.water - 10 / 60) < 1e-12);
+});
+
+test('a completed lawn run stays off during a later wall run and commands identify their source', async (t) => {
+  const f = fixture(t, {
+    zones: [
+      { uuid: 'zone', name: 'Back Lawn', enabled: true, runtime: 3, relayPin: 20 },
+      { uuid: 'wall', name: 'Green Wall', enabled: true, runtime: 6, relayPin: 21 },
+    ],
+  });
+  const logs = [];
+  f.system.log = { info: (...args) => logs.push(format(...args)) };
+  const wall = f.system.deviceData.zones[1];
+  f.system.setZoneActive(f.zone, true, 'Web UI');
+  t.mock.timers.tick(3000);
+  await settle();
+  assert.equal(f.pins.get(20), GPIO.LOW);
+  f.system.setZoneActive(wall, true, 'Web UI');
+  t.mock.timers.tick(5000);
+  await settle();
+  assert.equal(f.pins.get(20), GPIO.LOW);
+  assert.equal(f.pins.get(21), GPIO.HIGH);
+  t.mock.timers.tick(1000);
+  await settle();
+  assert.equal(f.pins.get(20), GPIO.LOW);
+  assert.equal(f.pins.get(21), GPIO.LOW);
+  assert.ok(logs.includes('Zone "Green Wall" requested "on" by "Web UI"'));
+  assert.ok(logs.includes('Zone "Green Wall" requested "off" by "runtime timer"'));
+
+  // An incoming HomeKit start is allowed to replace the current Web UI run.
+  f.system.setZoneActive(wall, true, 'Web UI');
+  const lawnService = f.service;
+  await lawnService.getCharacteristic(HAP.Characteristic.Active).handleSetRequest(HAP.Characteristic.Active.ACTIVE);
+  t.mock.timers.tick(500);
+  await settle();
+  assert.equal(f.pins.get(20), GPIO.HIGH);
+  assert.equal(f.pins.get(21), GPIO.LOW);
+  assert.ok(logs.includes('Zone "Back Lawn" requested "on" by "HomeKit"'));
+  assert.ok(logs.includes('Zone "Green Wall" requested "off" by "switch to Back Lawn"'));
 });
 
 test('a second zone cannot open while the preceding zone fails to close', async (t) => {

@@ -2,6 +2,18 @@
 
 All notable changes to `irrigationsystem` will be documented in this file. This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.0.9 (2026/10/24)
+
+### Added
+
+- Added zone request sources to logs to distinguish Web UI commands, HomeKit commands, runtime expiry, and zone switches
+- Added periodic and final debug counts of received flow-sensor pulses during watering
+
+### Fixed
+
+- Removed the 20 ms flow-sensor pulse rejection gate so every rising-edge callback contributes to measured usage
+- Preserved fractional litres in zone completion logs so small positive flow measurements are not reported as 0L
+
 ## v0.0.8 (2026/10/11)
 
 ### Dependency Updates

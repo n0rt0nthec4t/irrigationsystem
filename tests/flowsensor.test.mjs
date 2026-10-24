@@ -1,15 +1,93 @@
-// Verify that pin lookups return the shared sensor owner during updates and removal.
+// Verify direct pulse accounting, measurement diagnostics, and shared sensor lifecycle.
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { syncBuiltinESMExports } from 'node:module';
-import { performance } from 'node:perf_hooks';
+import { format } from 'node:util';
 import FlowSensor from '../dist/flowsensor.js';
 import HomeKitDevice from '../dist/HomeKitDevice.js';
+import { LOG_LEVELS } from '../dist/utils.js';
+
+test('every rising-edge callback counts, including bursts in the same millisecond', (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setInterval'], now: 100000 });
+  syncBuiltinESMExports();
+  t.mock.method(HomeKitDevice, 'message', () => {});
+  const previousGPIO = FlowSensor.GPIO;
+  let pulse;
+  FlowSensor.GPIO = {
+    open() {},
+    poll(_pin, callback) {
+      pulse = callback;
+    },
+  };
+  const sensor = new FlowSensor(undefined, 'timing', { sensorPin: 17, flowRate: 0.964 });
+  t.after(() => {
+    sensor.onShutdown();
+    FlowSensor.GPIO = previousGPIO;
+    t.mock.timers.reset();
+    syncBuiltinESMExports();
+  });
+
+  // The old 20 ms gate discarded all but one callback in this burst.
+  for (let index = 0; index < 100; index++) {
+    pulse();
+  }
+  assert.equal(sensor.flush().volume, (100 * 0.964) / 60);
+  assert.equal(sensor.flush().volume, 0);
+  for (let index = 0; index < 10; index++) {
+    t.mock.timers.tick(1);
+    pulse();
+  }
+  assert.equal(sensor.flush().volume, (10 * 0.964) / 60);
+});
+
+test('expected-flow diagnostics report received pulses without losing usage', (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setInterval'], now: 100000 });
+  syncBuiltinESMExports();
+  t.mock.method(HomeKitDevice, 'message', () => {});
+  const logs = [];
+  const log = Object.fromEntries(Object.values(LOG_LEVELS).map((level) => [level, (...args) => logs.push(format(...args))]));
+  const previousGPIO = FlowSensor.GPIO;
+  let pulse;
+  FlowSensor.GPIO = {
+    open() {},
+    poll(_pin, callback) {
+      pulse = callback;
+    },
+  };
+  const sensor = new FlowSensor(log, 'diagnostics', { sensorPin: 17, flowRate: 0.964 });
+  t.after(() => {
+    sensor.onShutdown();
+    FlowSensor.GPIO = previousGPIO;
+    t.mock.timers.reset();
+    syncBuiltinESMExports();
+  });
+  sensor.markExpectedFlow(true);
+  logs.length = 0;
+  t.mock.timers.tick(29000);
+  assert.equal(logs.length, 0);
+  t.mock.timers.tick(1000);
+  assert.match(logs.at(-1), /GPIO pin "17": "0" received pulses over "30" seconds/);
+  pulse();
+  pulse();
+  assert.equal(sensor.flush().volume, (2 * 0.964) / 60);
+  assert.equal(sensor.flush().volume, 0);
+  t.mock.timers.tick(25);
+  pulse();
+  assert.equal(sensor.flush().volume, 0.964 / 60);
+  sensor.markExpectedFlow(false);
+  assert.match(logs.at(-1), /"3" received pulses over "30.025" seconds/);
+  assert.match(logs.at(-1), /calibration: "0.964"/);
+  const logCount = logs.length;
+  t.mock.timers.tick(30000);
+  assert.equal(logs.length, logCount);
+  sensor.markExpectedFlow(true);
+  sensor.markExpectedFlow(false);
+  assert.match(logs.at(-1), /"0" received pulses/);
+});
 
 test('shared sensors retain pending volume and polling until their last target detaches', (t) => {
   t.mock.timers.enable({ apis: ['Date', 'setInterval'], now: 100000 });
   syncBuiltinESMExports();
-  t.mock.method(performance, 'now', () => Date.now());
   const messages = [];
   const polling = [];
   const previousGPIO = FlowSensor.GPIO;

@@ -71,7 +71,7 @@ WaterTank.GPIO = GPIO;
 
 export default class IrrigationSystem extends HomeKitDevice {
   static TYPE = 'IrrigationSystem';
-  static VERSION = '2026.10.11';
+  static VERSION = '2026.10.16';
 
   irrigationService = undefined; // HomeKit service for this irrigation system
   leakSensorService = undefined; // HomeKit service for a "leak" sensor
@@ -509,7 +509,13 @@ export default class IrrigationSystem extends HomeKitDevice {
     return zoneData.valves.every((valve) => valve.isOpen() === false);
   }
 
-  setZoneActive(zone, value) {
+  /**
+   * Apply a zone request and record its origin before it can interrupt another run.
+   * @param {{uuid: string}} zone Configured zone reference.
+   * @param {boolean|number} value Requested HomeKit Active state or boolean.
+   * @param {string} [source='controller'] Request origin for operational logs.
+   */
+  setZoneActive(zone, value, source = 'controller') {
     if (
       typeof zone !== 'object' ||
       (typeof value !== 'boolean' &&
@@ -526,6 +532,10 @@ export default class IrrigationSystem extends HomeKitDevice {
     let wantsStart = value === this.hap.Characteristic.Active.ACTIVE || value === true;
     let wantsStop = value === this.hap.Characteristic.Active.INACTIVE || value === false;
     let zoneEnabled = activeZone?.enabled === true;
+
+    // State-change logs alone cannot distinguish a UI click from a HomeKit
+    // automation. Log requests, including duplicates and rejected starts.
+    this?.log?.info?.('Zone "%s" requested "%s" by "%s"', activeZone.name, wantsStart === true ? 'on' : 'off', source);
 
     if (wantsStart === true && zoneEnabled !== true) {
       this?.log?.warn?.('Ignored request to start disabled zone "%s"', activeZone.name);
@@ -554,10 +564,10 @@ export default class IrrigationSystem extends HomeKitDevice {
         let runningZoneUUID = runningZone[0];
 
         if (runningZoneUUID !== zone.uuid) {
-          let activeZone = this.deviceData.zones.find((z) => z?.uuid === runningZoneUUID);
+          let runningZoneConfig = this.deviceData.zones.find((z) => z?.uuid === runningZoneUUID);
 
-          if (activeZone !== undefined) {
-            this.setZoneActive(activeZone, this.hap.Characteristic.Active.INACTIVE);
+          if (runningZoneConfig !== undefined) {
+            this.setZoneActive(runningZoneConfig, this.hap.Characteristic.Active.INACTIVE, 'switch to ' + activeZone.name);
           }
         }
         // Do not open a second zone when the preceding valve failed to close.
@@ -720,7 +730,7 @@ export default class IrrigationSystem extends HomeKitDevice {
           }
 
           if (activeCheck.type === 'valve' && activeCheck.takeaction === true) {
-            this.setZoneActive(activeCheck.context, activeCheck.value);
+            this.setZoneActive(activeCheck.context, activeCheck.value, 'HomeKit');
           } else if (activeCheck.type === 'valve' && activeCheck.takeaction === false) {
             // Workaround for active state of valves going to "waiting" when we don't want them to straight after the callback to HomeKit
             setTimeout(() => {
@@ -817,7 +827,7 @@ export default class IrrigationSystem extends HomeKitDevice {
       return;
     }
 
-    this.setZoneActive(zone, this.hap.Characteristic.Active.INACTIVE);
+    this.setZoneActive(zone, this.hap.Characteristic.Active.INACTIVE, 'runtime timer');
   }
 
   #handleWaterLevelEvent(message = {}) {
@@ -1060,9 +1070,14 @@ export default class IrrigationSystem extends HomeKitDevice {
     let seconds = Math.floor(totalDuration % 60);
     let durationText = minutes + 'm ' + seconds + 's';
 
-    // Format water (litres)
+    // Preserve fractional usage in the log so a small positive measurement
+    // cannot look like a sensor that recorded no water.
     let waterText =
-      Number.isFinite(Number(totalWater)) === true && totalWater > 0 ? Math.round(totalWater).toLocaleString() + 'L' : undefined;
+      Number.isFinite(Number(totalWater)) === true && totalWater > 0
+        ? totalWater < 0.001
+          ? '<0.001L'
+          : totalWater.toLocaleString(undefined, { maximumFractionDigits: 3 }) + 'L'
+        : undefined;
 
     this.history(zoneData.service, {
       time: Math.floor(time / 1000),

@@ -24,7 +24,7 @@
 // - Scheduling via Eve Home (Aqua)
 // - Integrate Apple WeatherKit for weather-aware irrigation
 //
-// Code version: 2026.10.11
+// Code version: 2026.10.24
 // Mark Hulskamp
 'use strict';
 
@@ -459,7 +459,7 @@ try {
           let zone = config.zones.find((item) => item.uuid === data.uuid);
 
           if (zone !== undefined) {
-            tempDevice.setZoneActive(zone, data.active === true);
+            tempDevice.setZoneActive(zone, data.active === true, 'Web UI');
           }
         }
       },
