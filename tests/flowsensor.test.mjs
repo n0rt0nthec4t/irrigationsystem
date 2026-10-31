@@ -1,11 +1,9 @@
-// Verify direct pulse accounting, measurement diagnostics, and shared sensor lifecycle.
+// Verify direct pulse accounting and shared sensor lifecycle.
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { syncBuiltinESMExports } from 'node:module';
-import { format } from 'node:util';
 import FlowSensor from '../dist/flowsensor.js';
 import HomeKitDevice from '../dist/HomeKitDevice.js';
-import { LOG_LEVELS } from '../dist/utils.js';
 
 test('every rising-edge callback counts, including bursts in the same millisecond', (t) => {
   t.mock.timers.enable({ apis: ['Date', 'setInterval'], now: 100000 });
@@ -38,67 +36,6 @@ test('every rising-edge callback counts, including bursts in the same millisecon
     pulse();
   }
   assert.equal(sensor.flush().volume, (10 * 0.964) / 60);
-});
-
-test('expected-flow diagnostics report received pulses without losing usage', (t) => {
-  t.mock.timers.enable({ apis: ['Date', 'setInterval'], now: 100000 });
-  syncBuiltinESMExports();
-  t.mock.method(HomeKitDevice, 'message', () => {});
-  const logs = [];
-  const log = Object.fromEntries(Object.values(LOG_LEVELS).map((level) => [level, (...args) => logs.push(format(...args))]));
-  const previousGPIO = FlowSensor.GPIO;
-  let pulse;
-  FlowSensor.GPIO = {
-    open() {},
-    poll(_pin, callback) {
-      pulse = callback;
-    },
-  };
-  const sensor = new FlowSensor(log, 'diagnostics', { sensorPin: 17, flowRate: 0.964 });
-  t.after(() => {
-    sensor.onShutdown();
-    FlowSensor.GPIO = previousGPIO;
-    t.mock.timers.reset();
-    syncBuiltinESMExports();
-  });
-  sensor.markExpectedFlow(true);
-  logs.length = 0;
-  t.mock.timers.tick(29000);
-  assert.equal(logs.length, 0);
-  t.mock.timers.tick(1000);
-  assert.match(logs.at(-1), /GPIO pin "17": "0" received pulses over "30" seconds/);
-  pulse();
-  pulse();
-  assert.equal(sensor.flush().volume, (2 * 0.964) / 60);
-  assert.equal(sensor.flush().volume, 0);
-  t.mock.timers.tick(25);
-  pulse();
-  assert.equal(sensor.flush().volume, 0.964 / 60);
-  sensor.markExpectedFlow(false);
-  assert.match(logs.at(-1), /"3" received pulses over "30.025" seconds/);
-  assert.match(logs.at(-1), /calibration: "0.964"/);
-  const logCount = logs.length;
-  t.mock.timers.tick(30000);
-  assert.equal(logs.length, logCount);
-  sensor.markExpectedFlow(true);
-  sensor.markExpectedFlow(false);
-  assert.match(logs.at(-1), /"0" received pulses/);
-
-  // Idle pulses still contribute usage but must not enter the next diagnostic
-  // period. Repeated starts and flushes must not reset its cumulative count.
-  pulse();
-  assert.equal(sensor.flush().volume, 0.964 / 60);
-  sensor.markExpectedFlow(true);
-  pulse();
-  t.mock.timers.tick(15000);
-  sensor.markExpectedFlow(true);
-  pulse();
-  t.mock.timers.tick(15000);
-  assert.match(logs.at(-1), /"2" received pulses over "30" seconds/);
-  pulse();
-  assert.equal(sensor.flush().volume, 0.964 / 60);
-  sensor.markExpectedFlow(false);
-  assert.match(logs.at(-1), /"3" received pulses over "30" seconds/);
 });
 
 test('shared sensors retain pending volume and polling until their last target detaches', (t) => {

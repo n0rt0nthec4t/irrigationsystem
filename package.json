@@ -2,7 +2,7 @@
     "name": "irrigationsystem",
     "displayName": "Irrigation System",
     "type": "module",
-    "version": "0.0.9",
+    "version": "0.0.10",
     "description": "HomeKit irrigation system using HAP-NodeJS library",
     "author": "n0rt0nthec4t",
     "license": "Apache-2.0",
@@ -45,9 +45,9 @@
     "devDependencies": {
         "@eslint/js": "^10.0.1",
         "@stylistic/eslint-plugin": "^5.10.0",
-        "@types/node": "^26.6.5",
-        "@typescript-eslint/parser": "^8.72.0",
-        "eslint": "^10.13.0",
+        "@types/node": "^26.6.6",
+        "@typescript-eslint/parser": "^8.72.1",
+        "eslint": "^10.14.0",
         "globals": "^17.13.0",
         "prettier": "^3.9.10",
         "prettier-eslint": "^17.1.2"

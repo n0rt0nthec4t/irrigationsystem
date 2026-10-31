@@ -2,6 +2,25 @@
 
 All notable changes to `irrigationsystem` will be documented in this file. This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.0.10 (2026/11/1)
+
+### Dependency Updates
+
+- Updated `HomeKitDevice` to `2026.10.29`
+- Updated `HomeKitHistory` to `2026.10.18`
+- Updated Node types to `26.6.6`, TypeScript ESLint parser to `8.72.1`, and ESLint to `10.14.0`
+- Refreshed indirect dependencies in the lockfile
+
+### Fixed
+
+- Zone flow rates and water estimates now use the latest valid measured run instead of averaging older readings, so recent usage is reflected at the configured runtime
+- Preserved irrigation and leak sensor Eve linking with the updated HomeKitDevice service history options
+
+### Changed
+
+- Removed flow-sensor pulse diagnostic counters and reporting
+- Moved routine zone request, start, and completion logs to debug level, alongside valve activity
+
 ## v0.0.9 (2026/10/24)
 
 ### Dependency Updates

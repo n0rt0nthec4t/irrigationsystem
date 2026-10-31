@@ -65,6 +65,25 @@ async function settle() {
   }
 }
 
+test('service setup forwards Eve history options through the updated HomeKitDevice API', async (t) => {
+  const f = fixture(t, { eveHistory: true, sensorFlowPin: 1, flowRate: 1, leakSensor: true });
+  const linked = [];
+  f.system.historyService.linkToEveHome = (service, options) => {
+    linked.push({ service, options });
+  };
+  // The fixture has already built services; dispatch ADD to exercise deferred
+  // history linking without repeating GPIO setup or registering timers again.
+  t.mock.method(f.system, 'onAdd', () => {});
+  await f.system.message(HomeKitDevice.ADD);
+
+  assert.equal(f.system.irrigationService.isPrimaryService, true);
+  assert.equal(linked.length, 2);
+  const irrigation = linked.find((entry) => entry.service === f.system.irrigationService);
+  assert.equal(typeof irrigation?.options.messages, 'function');
+  assert.equal(Object.hasOwn(irrigation.options, 'primary'), false);
+  assert.deepEqual(linked.find((entry) => entry.service === f.system.leakSensorService)?.options, {});
+});
+
 test('an old stop fallback cannot cancel a restarted run or its deadline', async (t) => {
   const f = fixture(t);
   f.system.setZoneActive(f.zone, true);
@@ -141,7 +160,7 @@ test('a virtual zone accumulates flow across both relays and completes only once
   });
   const zone = f.system.deviceData.zones[2];
   const logs = [];
-  f.system.log = { info: (...args) => logs.push(format(...args)) };
+  f.system.log = { debug: (...args) => logs.push(format(...args)), info: () => assert.fail('Routine zone activity must use debug') };
   f.system.setZoneActive(zone, true);
   await settle();
   assert.equal(f.pins.get(18), GPIO.HIGH);
@@ -173,7 +192,7 @@ test('a virtual zone accumulates flow across both relays and completes only once
 test('completion logs keep tiny positive measurements distinct from zero', async (t) => {
   const f = fixture(t, { sensorFlowPin: 17, flowRate: 0.001 });
   const logs = [];
-  f.system.log = { info: (...args) => logs.push(format(...args)) };
+  f.system.log = { debug: (...args) => logs.push(format(...args)), info: () => assert.fail('Routine zone activity must use debug') };
   f.system.setZoneActive(f.zone, true);
   t.mock.timers.tick(25);
   f.polls.get(17)(17);
@@ -383,7 +402,7 @@ test('a completed lawn run stays off during a later wall run and commands identi
     ],
   });
   const logs = [];
-  f.system.log = { info: (...args) => logs.push(format(...args)) };
+  f.system.log = { debug: (...args) => logs.push(format(...args)), info: () => assert.fail('Routine zone activity must use debug') };
   const wall = f.system.deviceData.zones[1];
   f.system.setZoneActive(f.zone, true, 'Web UI');
   t.mock.timers.tick(3000);

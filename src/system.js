@@ -71,7 +71,7 @@ WaterTank.GPIO = GPIO;
 
 export default class IrrigationSystem extends HomeKitDevice {
   static TYPE = 'IrrigationSystem';
-  static VERSION = '2026.10.16';
+  static VERSION = '2026.11.01';
 
   irrigationService = undefined; // HomeKit service for this irrigation system
   leakSensorService = undefined; // HomeKit service for a "leak" sensor
@@ -104,11 +104,11 @@ export default class IrrigationSystem extends HomeKitDevice {
 
   // Class functions
   onAdd() {
-    // Create / get primary irrigation system service and register message handler
+    // Keep Eve configuration inside history; the helper consumes it after onAdd.
     this.irrigationService = this.addService(this.hap.Service.IrrigationSystem, '', 1, {
-      messages: this.message.bind(this),
+      primary: true,
+      history: { messages: this.message.bind(this) },
     });
-    this.irrigationService.setPrimaryService();
 
     // Sync initial power state to HomeKit
     this.irrigationService.updateCharacteristic(
@@ -535,7 +535,7 @@ export default class IrrigationSystem extends HomeKitDevice {
 
     // State-change logs alone cannot distinguish a UI click from a HomeKit
     // automation. Log requests, including duplicates and rejected starts.
-    this?.log?.info?.('Zone "%s" requested "%s" by "%s"', activeZone.name, wantsStart === true ? 'on' : 'off', source);
+    this?.log?.debug?.('Zone "%s" requested "%s" by "%s"', activeZone.name, wantsStart === true ? 'on' : 'off', source);
 
     if (wantsStart === true && zoneEnabled !== true) {
       this?.log?.warn?.('Ignored request to start disabled zone "%s"', activeZone.name);
@@ -606,7 +606,7 @@ export default class IrrigationSystem extends HomeKitDevice {
         duration: 0,
       });
 
-      this?.log?.info?.('Zone "%s" was turned "on"', activeZone.name);
+      this?.log?.debug?.('Zone "%s" was turned "on"', activeZone.name);
 
       // Update HomeKit BEFORE opening valves
       zoneData.service.updateCharacteristic(this.hap.Characteristic.Active, this.hap.Characteristic.Active.ACTIVE);
@@ -1025,7 +1025,7 @@ export default class IrrigationSystem extends HomeKitDevice {
           duration: 0,
         });
 
-        this?.log?.info?.('Zone "%s" was turned "on"', associatedZone.name);
+        this?.log?.debug?.('Zone "%s" was turned "on"', associatedZone.name);
       }
 
       zoneData.service.updateCharacteristic(this.hap.Characteristic.Active, this.hap.Characteristic.Active.ACTIVE);
@@ -1086,8 +1086,8 @@ export default class IrrigationSystem extends HomeKitDevice {
       duration: totalDuration,
     });
 
-    // Enhanced logging
-    this?.log?.info?.(
+    // Keep routine run summaries with the other debug activity messages.
+    this?.log?.debug?.(
       waterText !== undefined ? 'Zone "%s" was turned "off" after %s using %s' : 'Zone "%s" was turned "off" after %s',
       zone.name,
       durationText,
@@ -1477,7 +1477,7 @@ export default class IrrigationSystem extends HomeKitDevice {
     // This function should be called AFTER flow sensor setup
     if (this.#flowSensor !== undefined && deviceData.leakSensor === true) {
       if (this.leakSensorService === undefined) {
-        this.leakSensorService = this.addService(this.hap.Service.LeakSensor, '', 1, {});
+        this.leakSensorService = this.addService(this.hap.Service.LeakSensor, '', 1, { history: {} });
         if (atStart === false) {
           this?.log?.info?.('Leak sensor', deviceData.waterLeakAlert === true ? 'with alerting' : '');
         }
@@ -1860,11 +1860,10 @@ export default class IrrigationSystem extends HomeKitDevice {
         }
 
         let lastRun = formatLastRun(lastRunEntry?.time);
-        let recentRuns = completedRuns.slice(-5);
+        // Use the latest measured run so old sensor readings or calibration
+        // changes do not dilute the flow rate used for the next run's estimate.
         let lastFlowRate =
-          recentRuns.length > 0
-            ? recentRuns.reduce((total, entry) => total + Number(entry.water) / (Number(entry.duration) / 60), 0) / recentRuns.length
-            : 0;
+          lastRunEntry !== undefined ? Number(lastRunEntry.water) / (Number(lastRunEntry.duration) / 60) : 0;
         let estimatedUsage = lastFlowRate > 0 ? Math.round((lastFlowRate * runtime) / 60) : undefined;
 
         html += '<div class="dashboard-zone-row' + (isRunning === true ? ' running' : '') + '">';

@@ -25,7 +25,7 @@
 // - GPIO library must be assigned to FlowSensor.GPIO before use
 // - Valid GPIO pin required
 //
-// Code version 2026.10.24
+// Code version 2026.11.01
 // Mark Hulskamp
 'use strict';
 
@@ -51,9 +51,6 @@ export default class FlowSensor {
   #sensorPin;
   #targets = new Set();
   #pulseCounter = 0;
-  #diagnosticPulses = 0;
-  #diagnosticStartTime;
-  #diagnosticLastTime = 0;
   #lastFlowTime = Date.now();
   #flowRate = 0;
   #timer;
@@ -181,11 +178,6 @@ export default class FlowSensor {
 
     sensor.#targets.delete(this.#HomeKitDeviceUUID);
 
-    if (sensor.#targets.size === 0 && sensor.#flowExpected === true) {
-      sensor.#logPulseDiagnostics(sensorPin);
-      sensor.#diagnosticStartTime = undefined;
-    }
-
     // This instance is no longer attached to the sensor.
     this.#sensorPin = undefined;
 
@@ -228,17 +220,6 @@ export default class FlowSensor {
     // Only act if state actually changes
     if (newState === sensor.#flowExpected) {
       return;
-    }
-
-    if (newState === true) {
-      // Diagnostics span the whole expected-flow period, independently of
-      // samples consumed by timers, flushes, or live calibration updates.
-      sensor.#diagnosticPulses = 0;
-      sensor.#diagnosticStartTime = Date.now();
-      sensor.#diagnosticLastTime = sensor.#diagnosticStartTime;
-    } else {
-      sensor.#logPulseDiagnostics(this.#sensorPin);
-      sensor.#diagnosticStartTime = undefined;
     }
 
     sensor.#flowExpected = newState;
@@ -344,9 +325,6 @@ export default class FlowSensor {
         // Count every rising edge. A time gate drops valid high-frequency sensor
         // pulses (the FL-808 reaches 288 Hz at its rated 60 L/min).
         this.#pulseCounter++;
-        if (this.#flowExpected === true) {
-          this.#diagnosticPulses++;
-        }
       },
       FlowSensor.GPIO.POLL_HIGH,
     );
@@ -354,9 +332,6 @@ export default class FlowSensor {
     // Process accumulated pulses once per second.
     this.#timer = setInterval(() => {
       this.#processFlow();
-      if (this.#flowExpected === true && Date.now() - this.#diagnosticLastTime >= 30000) {
-        this.#logPulseDiagnostics(sensorPin);
-      }
     }, 1000);
 
     // Store this instance as the shared owner for this GPIO pin.
@@ -396,23 +371,6 @@ export default class FlowSensor {
 
     // Pass flow data into leak detection logic
     this.#processLeakDetection(flowMessage);
-  }
-
-  // Reporting must not consume usage pulses or change the calibration. The
-  // optional pin preserves the owner's identity when a shared target detaches.
-  #logPulseDiagnostics(pin = this.#sensorPin) {
-    if (this.#diagnosticStartTime === undefined) {
-      return;
-    }
-    let now = Date.now();
-    this.#diagnosticLastTime = now;
-    this?.log?.debug?.(
-      'Flow sensor on GPIO pin "%s": "%s" received pulses over "%s" seconds; calibration: "%s" L/min @ 1Hz',
-      pin,
-      this.#diagnosticPulses,
-      Math.max(0, now - this.#diagnosticStartTime) / 1000,
-      this.#flowRate,
-    );
   }
 
   #processLeakDetection(message = {}) {

@@ -70,11 +70,11 @@ test('flow volume preserves short bursts and varying sampling intervals', () => 
   sensor.onShutdown();
 });
 
-function dashboard(tank, history = []) {
+function dashboard(tank, history = [], zones = []) {
   class Device {
     hap = { Service: { Valve: { UUID: 'valve' } } };
-    historyService = { getHistory: () => history };
-    deviceData = { zones: [], tanks: [{ uuid: 'tank', name: 'Rainwater', capacity: 5000, enabled: true }] };
+    historyService = { getHistory: () => history, lastHistory: () => history.at(-1) };
+    deviceData = { zones, tanks: [{ uuid: 'tank', name: 'Rainwater', capacity: 5000, enabled: true }] };
   }
   const context = vm.createContext({
     HomeKitDevice: Device,
@@ -117,6 +117,40 @@ test('usage preserves fractions and totals completed runs only', () => {
   ]);
   assert.match(result.html, /Total \(30 days\)<\/div><div class="dashboard-usage-footer-value">34 L/);
   assert.match(result.html, /Daily average<\/div><div class="dashboard-usage-footer-value">1.13 L/);
+});
+
+test('zone estimates use the latest measured run instead of averaging old low readings', () => {
+  const time = Math.floor(Date.now() / 1000);
+  const history = [
+    ...Array.from({ length: 4 }, () => ({ status: 0, water: 66.25, duration: 3600, time: time - 86400 })),
+    { status: 0, water: 1200, duration: 3600, time },
+  ];
+  const zones = [{ uuid: 'zone', name: 'Front Lawn', runtime: 3600 }];
+  const result = dashboard(undefined, history, zones);
+  assert.match(result.html, /20.0 L\/min/);
+  assert.match(result.html, /Est. 1,200 L/);
+  assert.doesNotMatch(result.html, /Est. 293 L/);
+
+  // Runtime changes should scale the measured rate, not repeat the last total.
+  assert.match(dashboard(undefined, history, [{ ...zones[0], runtime: 1800 }]).html, /Est. 600 L/);
+});
+
+test('zone estimates skip starts and unusable measurements and handle missing history', () => {
+  const time = Math.floor(Date.now() / 1000);
+  const zones = [{ uuid: 'zone', name: 'Front Lawn', runtime: 3600 }];
+  const invalidEntries = [
+    { status: 0, water: 0, duration: 3600, time },
+    { status: 0, water: 1200, duration: 0, time },
+    { status: 0, water: 'invalid', duration: 3600, time },
+    { status: 0, water: 1200, duration: 'invalid', time },
+    { status: 1, water: 0, duration: 0, time },
+  ];
+  assert.match(
+    dashboard(undefined, [{ status: 0, water: 1200, duration: 3600, time }, ...invalidEntries], zones).html,
+    /Est. 1,200 L/,
+  );
+  assert.match(dashboard(undefined, invalidEntries, zones).html, /No estimate/);
+  assert.match(dashboard(undefined, [], zones).html, /No estimate/);
 });
 
 test('dashboard refresh resumes after select interaction while text edits remain protected', async () => {
